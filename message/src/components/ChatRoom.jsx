@@ -2,7 +2,7 @@ import React, { useEffect, useState, useRef } from 'react';
 import { supabase } from '../supabaseClient';
 import { cryptoUtils } from '../utils/crypto';
 import { dbUtils } from '../utils/db';
-import { useParams, useNavigate } from 'react-router-dom';
+import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useChat } from '../ChatContext';
 
 const ChatRoom = ({ session }) => {
@@ -11,6 +11,7 @@ const ChatRoom = ({ session }) => {
   const [messages, setMessages] = useState([]);
   const [input, setInput] = useState('');
   const [encryptionKey, setEncryptionKey] = useState(null);
+  const [friendProfile, setFriendProfile] = useState(null);
   const messagesEndRef = useRef(null);
   const channelRef = useRef(null);
   const { setActiveRoom } = useChat();
@@ -28,11 +29,15 @@ const ChatRoom = ({ session }) => {
 
       const localMsgs = await dbUtils.getMessagesByRoom(roomId);
       setMessages(localMsgs);
+
+      // Fetch friend's profile info
+      const { data } = await supabase.from('profiles').select('*').eq('id', friendId).single();
+      setFriendProfile(data);
     };
     init();
 
     return () => setActiveRoom(null);
-  }, [roomId, sharedSecret]);
+  }, [roomId, sharedSecret, friendId]);
 
   useEffect(() => {
     if (!encryptionKey) return;
@@ -68,9 +73,15 @@ const ChatRoom = ({ session }) => {
             console.error("Failed to decrypt message:", e);
           }
         } else if (event === 'delete_message') {
-          const { messageId } = payload;
+          console.log("ChatRoom: Received delete_message event", payload);
+          const messageId = payload.messageId || payload; // Get the string directly
+          if (!messageId || typeof messageId !== 'string') return;
           setMessages(prev => prev.filter(m => m.messageId !== messageId));
           await dbUtils.deleteMessage(messageId);
+        } else if (event === 'clear_chat') {
+          console.log("ChatRoom: Received clear_chat event");
+          setMessages([]);
+          await dbUtils.clearRoomMessages(roomId);
         }
       })
       .subscribe((status) => {
@@ -101,30 +112,7 @@ const ChatRoom = ({ session }) => {
         payload: { sender: session.user.id, encryptedText, roomId, messageId, timestamp },
       };
 
-      // 1. Send to the active room channel (Fast & Direct)
-      if (channelRef.current) {
-        channelRef.current.send(payload);
-      }
-
-      // 2. Send to the friend's personal channel (For background notification)
-      const userChannel = supabase.channel(`user:${friendId}`);
-      userChannel.subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          await userChannel.send(payload);
-          setTimeout(() => supabase.removeChannel(userChannel), 1000);
-        }
-      });
-
-      // 3. Store in server's pending_messages table (For offline/logout delivery)
-      await supabase.from('pending_messages').insert({
-        sender_id: session.user.id,
-        receiver_id: friendId,
-        room_id: roomId,
-        encrypted_payload: encryptedText,
-        message_id: messageId,
-        timestamp: timestamp
-      });
-
+      // 1. Update UI and Local DB first (Immediate feedback)
       const myMessage = { 
         messageId,
         roomId, 
@@ -133,17 +121,48 @@ const ChatRoom = ({ session }) => {
         timestamp,
         read: true
       };
+      
+      console.log("ChatRoom: Saving to local DB and updating UI...");
       await dbUtils.saveMessage(myMessage);
       setMessages(prev => [...prev, myMessage]);
+      const lastInput = input;
       setInput('');
+
+      // 2. Send to the active room channel (Fast & Direct)
+      if (channelRef.current) {
+        console.log("ChatRoom: Sending broadcast to room...");
+        channelRef.current.send(payload);
+      }
+
+      // 3. Send to the friend's personal channel (For background notification)
+      console.log("ChatRoom: Sending broadcast to friend's channel...");
+      const userChannel = supabase.channel(`user:${friendId}`);
+      userChannel.subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await userChannel.send(payload);
+          setTimeout(() => supabase.removeChannel(userChannel), 1000);
+        }
+      });
+
+      // 4. Store in server's pending_messages table (For offline/logout delivery)
+      console.log("ChatRoom: Storing in pending_messages table...");
+      const { error: insErr } = await supabase.from('pending_messages').insert({
+        sender_id: session.user.id,
+        receiver_id: friendId,
+        room_id: roomId,
+        encrypted_payload: encryptedText,
+        message_id: messageId,
+        timestamp: timestamp
+      });
+      if (insErr) console.error("ChatRoom: Pending insert failed:", insErr);
+      
     } catch (e) {
+      console.error("ChatRoom: Send error:", e);
       alert("Error sending message");
     }
   };
 
   const deleteMessage = async (messageId) => {
-    if (!window.confirm("Delete this message for everyone?")) return;
-    
     try {
       // 1. Remove from local state and DB
       setMessages(prev => prev.filter(m => m.messageId !== messageId));
@@ -173,11 +192,66 @@ const ChatRoom = ({ session }) => {
     }
   };
 
+  const clearChat = async () => {
+    if (!window.confirm("ARE YOU SURE? This will delete ALL messages for BOTH participants FOREVER.")) return;
+
+    try {
+      // 1. Local cleanup
+      setMessages([]);
+      await dbUtils.clearRoomMessages(roomId);
+
+      const clearPayload = {
+        type: 'broadcast',
+        event: 'clear_chat',
+        payload: { roomId },
+      };
+
+      // 2. Broadcast to room and personal channel
+      if (channelRef.current) await channelRef.current.send(clearPayload);
+      
+      const userChannel = supabase.channel(`user:${friendId}`);
+      userChannel.subscribe(async (status) => {
+        if (status === 'SUBSCRIBED') {
+          await userChannel.send(clearPayload);
+          setTimeout(() => supabase.removeChannel(userChannel), 1000);
+        }
+      });
+
+      // 3. Cleanup server postbox
+      await supabase.from('pending_messages').delete().eq('room_id', roomId);
+    } catch (e) {
+      console.error("Error clearing chat:", e);
+    }
+  };
+
   return (
     <div className="container" style={{ display: 'flex', flexDirection: 'column', height: '100vh', paddingBottom: '1rem' }}>
       <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
-        <h2>Chat Room</h2>
-        <button onClick={() => navigate('/dashboard')} className="btn" style={{ width: 'auto', backgroundColor: 'var(--border-color)' }}>Back</button>
+        <Link to="/" className="btn" style={{ 
+          textDecoration: 'none', 
+          backgroundColor: '#4b5563', 
+          width: 'auto', 
+          padding: '5px 12px', 
+          fontSize: '0.9rem',
+          margin: 0
+        }}>← Back</Link>
+        <h2 style={{ margin: 0, fontSize: '1.1rem', wordBreak: 'break-all', maxWidth: '60%', textAlign: 'center' }}>
+          {friendProfile?.email || 'Loading...'}
+        </h2>
+        <button 
+          onClick={clearChat}
+          style={{ 
+            background: 'none', 
+            border: '1px solid rgba(239, 68, 68, 0.5)', 
+            color: '#ef4444', 
+            cursor: 'pointer',
+            padding: '5px 10px',
+            borderRadius: '5px',
+            fontSize: '0.8rem'
+          }}
+        >
+          🗑️ Clear All
+        </button>
       </header>
 
       <div className="glass-panel" style={{ flexGrow: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>

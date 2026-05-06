@@ -72,8 +72,15 @@ export const ChatProvider = ({ children }) => {
             console.error("Background message error:", e);
           }
         } else if (event === 'delete_message') {
-          const { messageId } = payload;
-          await dbUtils.deleteMessage(messageId);
+          const messageId = payload.messageId || payload;
+          if (messageId && typeof messageId === 'string') {
+            await dbUtils.deleteMessage(messageId);
+            const counts = await dbUtils.getUnreadCounts();
+            setUnreadCounts(counts);
+          }
+        } else if (event === 'clear_chat') {
+          const { roomId } = payload;
+          await dbUtils.clearRoomMessages(roomId);
           const counts = await dbUtils.getUnreadCounts();
           setUnreadCounts(counts);
         }

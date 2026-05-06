@@ -59,5 +59,16 @@ export const dbUtils = {
   async deleteMessage(messageId) {
     const db = await this.initDB();
     await db.delete(STORE_NAME, messageId);
+  },
+
+  async clearRoomMessages(roomId) {
+    const db = await this.initDB();
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const index = tx.store.index('roomId');
+    let cursor = await index.openCursor(IDBKeyRange.only(roomId));
+    while (cursor) {
+      await cursor.delete();
+      cursor = await cursor.continue();
+    }
   }
 };
