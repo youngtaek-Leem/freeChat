@@ -1,0 +1,217 @@
+:root {
+    --primary-red: #d32f2f;
+    --accent-yellow: #fbc02d;
+    --natural-green: #388e3c;
+    --brown-earth: #5d4037;
+    --white-ivory: #fafafa;
+    --text-dark: #212121;
+}
+
+* {
+    margin: 0;
+    padding: 0;
+    box-sizing: border-box;
+}
+
+body {
+    font-family: 'Noto Sans KR', sans-serif;
+    color: var(--text-dark);
+    background-color: var(--white-ivory);
+    line-height: 1.6;
+    overflow-x: hidden;
+}
+
+/* Hero Section */
+.hero {
+    position: relative;
+    height: 80vh;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    background-color: #000;
+    overflow: hidden;
+}
+
+.hero-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    opacity: 0.7;
+    transition: transform 10s ease-out;
+}
+
+.hero:hover .hero-img {
+    transform: scale(1.1);
+}
+
+.hero-overlay {
+    position: absolute;
+    top: 0;
+    left: 0;
+    width: 100%;
+    height: 100%;
+    background: linear-gradient(to bottom, transparent 40%, rgba(0,0,0,0.8));
+    z-index: 1;
+}
+
+.hero-text {
+    position: absolute;
+    z-index: 2;
+    text-align: center;
+    color: #fff;
+}
+
+.hero-text h1 {
+    font-family: 'Song Myung', serif;
+    font-size: 6rem;
+    margin-bottom: 0.5rem;
+    letter-spacing: 15px;
+}
+
+.hero-text p {
+    font-size: 1.5rem;
+    font-weight: 100;
+    letter-spacing: 5px;
+    text-transform: uppercase;
+}
+
+/* Animations */
+.fade-in {
+    opacity: 0;
+    transform: translateY(30px);
+    transition: all 1s ease-out;
+}
+
+.fade-in.active {
+    opacity: 1;
+    transform: translateY(0);
+}
+
+.delay-1 { transition-delay: 0.3s; }
+
+/* Content Sections */
+.content {
+    max-width: 1200px;
+    margin: 0 auto;
+    padding: 5rem 2rem;
+}
+
+.section-title {
+    font-family: 'Song Myung', serif;
+    font-size: 2.5rem;
+    text-align: center;
+    margin-bottom: 3rem;
+    position: relative;
+}
+
+.section-title::after {
+    content: '';
+    display: block;
+    width: 50px;
+    height: 3px;
+    background: var(--primary-red);
+    margin: 1rem auto 0;
+}
+
+.intro {
+    text-align: center;
+    max-width: 800px;
+    margin: 0 auto 8rem;
+}
+
+.intro p {
+    font-size: 1.2rem;
+    color: #555;
+    word-break: keep-all;
+}
+
+/* Ingredient Grid */
+.ingredient-grid {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(300px, 1fr));
+    gap: 2rem;
+    margin-bottom: 8rem;
+}
+
+.ingredient-card {
+    background: #fff;
+    padding: 3rem 2rem;
+    border-radius: 20px;
+    text-align: center;
+    box-shadow: 0 10px 30px rgba(0,0,0,0.05);
+    transition: transform 0.3s ease, box-shadow 0.3s ease;
+    border-bottom: 4px solid transparent;
+}
+
+.ingredient-card:hover {
+    transform: translateY(-10px);
+    box-shadow: 0 20px 40px rgba(0,0,0,0.1);
+    border-bottom-color: var(--primary-red);
+}
+
+.card-icon {
+    font-size: 3rem;
+    margin-bottom: 1.5rem;
+}
+
+.ingredient-card h3 {
+    font-family: 'Song Myung', serif;
+    font-size: 1.5rem;
+    margin-bottom: 1rem;
+}
+
+.ingredient-card p {
+    font-size: 0.95rem;
+    color: #666;
+}
+
+/* How to Mix Tips */
+.how-to-mix {
+    background: #fdf5e6;
+    padding: 5rem;
+    border-radius: 40px;
+    position: relative;
+}
+
+.tips-list {
+    list-style: none;
+    max-width: 800px;
+    margin: 0 auto;
+}
+
+.tips-list li {
+    display: flex;
+    align-items: center;
+    gap: 2rem;
+    margin-bottom: 3rem;
+    padding-bottom: 2rem;
+    border-bottom: 1px solid rgba(0,0,0,0.05);
+}
+
+.step {
+    font-family: 'Song Myung', serif;
+    font-size: 3rem;
+    font-weight: 900;
+    color: var(--primary-red);
+    opacity: 0.2;
+}
+
+.tips-list p {
+    font-size: 1.15rem;
+}
+
+/* Footer */
+.footer {
+    text-align: center;
+    padding: 4rem;
+    background-color: #f4f4f4;
+    font-size: 0.9rem;
+    color: #999;
+}
+
+/* Responsive */
+@media (max-width: 768px) {
+    .hero-text h1 { font-size: 3.5rem; }
+    .hero-text p { font-size: 1.1rem; }
+    .how-to-mix { padding: 3rem; }
+}

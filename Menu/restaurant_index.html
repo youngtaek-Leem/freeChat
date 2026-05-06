@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>가람 (GARAM) | 전통 한식 메뉴</title>
+    <meta name="description" content="가람 - 정성을 담은 전통 한식의 정수. 우리 술과 계절 반상을 만나보세요.">
+    <!-- html2pdf.js -->
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2pdf.js/0.10.1/html2pdf.bundle.min.js"></script>
+    <link rel="stylesheet" href="restaurant_style.css">
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Nanum+Brush+Script&family=Nanum+Myeongjo:wght@400;700;800&family=Noto+Serif+KR:wght@200;400;700&display=swap" rel="stylesheet">
+</head>
+<body>
+    <div class="hanji-overlay"></div>
+    
+    <header class="hero">
+        <div class="hero-content">
+            <div class="trad-pattern-top"></div>
+            <span class="eyebrow">정성을 담은 한그릇</span>
+            <h1 class="logo">가람</h1>
+            <p class="tagline">전통과 현대가 어우러진 단아한 한식 공간</p>
+            <div class="actions">
+                <button id="download-btn" class="btn-primary">
+                    <span class="icon">📜</span> 메뉴판 소장하기 (PDF)
+                </button>
+            </div>
+            <div class="trad-pattern-bottom"></div>
+        </div>
+    </header>
+
+    <main class="menu-wrapper" id="menu-board">
+        <div class="menu-container">
+            <div class="stamp-mark">가람</div>
+            <header class="menu-header">
+                <h2>오늘의 차림상</h2>
+                <div class="divider-trad"></div>
+            </header>
+
+            <!-- 반상 (Bansang) -->
+            <section class="menu-section">
+                <h3 class="section-title">계절 반상 <span class="sub-h">Bansang</span></h3>
+                <div class="menu-grid">
+                    <div class="menu-item">
+                        <div class="item-header">
+                            <span class="item-name">수라 반상</span>
+                            <span class="item-price">55,000</span>
+                        </div>
+                        <p class="item-desc">임금님께 올리던 정성으로 차려낸 12첩 반상 정식</p>
+                    </div>
+                    <div class="menu-item">
+                        <div class="item-header">
+                            <span class="item-name">가람 보리굴비 정식</span>
+                            <span class="item-price">38,000</span>
+                        </div>
+                        <p class="item-desc">해풍에 잘 말린 보리굴비와 시원한 녹차물이 어우러진 정식</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 일품요리 (Ilpum) -->
+            <section class="menu-section">
+                <h3 class="section-title">일품 요리 <span class="sub-h">Ilpum-Yori</span></h3>
+                <div class="menu-grid">
+                    <div class="menu-item">
+                        <div class="item-header">
+                            <span class="item-name">전통 갈비찜</span>
+                            <span class="item-price">65,000</span>
+                        </div>
+                        <p class="item-desc">천연 과일 양념으로 장시간 정성껏 재워 부드러운 소갈비찜</p>
+                    </div>
+                    <div class="menu-item">
+                        <div class="item-header">
+                            <span class="item-name">명품 구절판</span>
+                            <span class="item-price">45,000</span>
+                        </div>
+                        <p class="item-desc">아홉 가지 진귀한 재료를 밀전병에 싸먹는 팔도 진미</p>
+                    </div>
+                    <div class="menu-item">
+                        <div class="item-header">
+                            <span class="item-name">자연산 송이 전복초</span>
+                            <span class="item-price">72,000</span>
+                        </div>
+                        <p class="item-desc">향긋한 송이와 싱싱한 전복을 특제 간장 양념에 졸여낸 보양식</p>
+                    </div>
+                </div>
+            </section>
+
+            <!-- 전통주 (Liquor) -->
+            <section class="menu-section">
+                <h3 class="section-title">전통 반주 <span class="sub-h">Premium Spirits</span></h3>
+                <div class="menu-grid">
+                    <div class="menu-item">
+                        <div class="item-header">
+                            <span class="item-name">지평 생 막걸리</span>
+                            <span class="item-price">8,000</span>
+                        </div>
+                        <p class="item-desc">옛 방식 그대로 빚은 깊고 깔끔한 맛의 생 막걸리</p>
+                    </div>
+                    <div class="menu-item">
+                        <div class="item-header">
+                            <span class="item-name">문배주 (25도)</span>
+                            <span class="item-price">35,000</span>
+                        </div>
+                        <p class="item-desc">평양의 전통 명주, 돌배 향이 일품인 증류식 소주</p>
+                    </div>
+                </div>
+            </section>
+
+            <footer class="menu-footer">
+                <p>소중한 분과의 고결한 만남, 가람이 함께합니다.</p>
+                <p class="copyright">&copy; 2026 가람 (GARAM). All Rights Reserved.</p>
+            </footer>
+        </div>
+    </main>
+
+    <script src="restaurant_script.js"></script>
+</body>
+</html>

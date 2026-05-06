@@ -1,0 +1,1498 @@
+import * as vscode from 'vscode';
+import axios from 'axios';
+import * as fs from 'fs';
+import * as path from 'path';
+import * as os from 'os';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+
+const execAsync = promisify(exec);
+
+// ============================================================
+// Connect AI — Full Agentic Local AI for VS Code
+// 100% Offline · File Create · File Edit · Terminal · Multi-file Context
+// ============================================================
+
+// Settings are read from VS Code configuration (File > Preferences > Settings)
+function getConfig() {
+    const cfg = vscode.workspace.getConfiguration('connectAiLab');
+    return {
+        ollamaBase: cfg.get<string>('ollamaUrl', 'http://127.0.0.1:11434'),
+        defaultModel: cfg.get<string>('defaultModel', 'gemma4:e2b'),
+        maxTreeFiles: cfg.get<number>('maxContextFiles', 200),
+        timeout: cfg.get<number>('requestTimeout', 300) * 1000,
+        secondBrainRepo: cfg.get<string>('secondBrainRepo', ''),
+    };
+}
+
+const EXCLUDED_DIRS = new Set([
+    'node_modules', '.git', '.vscode', 'out', 'dist', 'build',
+    '.next', '.cache', '__pycache__', '.DS_Store', 'coverage',
+    '.turbo', '.nuxt', '.output', 'vendor', 'target'
+]);
+const MAX_CONTEXT_SIZE = 40_000; // chars
+
+const SYSTEM_PROMPT = `You are "Connect AI", a premium agentic AI coding assistant running 100% offline on the user's machine.
+
+You have FOUR powerful agent actions. Use them whenever appropriate:
+
+━━━ ACTION 1: CREATE NEW FILES ━━━
+<create_file path="relative/path/file.ext">
+file content here
+</create_file>
+
+━━━ ACTION 2: EDIT EXISTING FILES ━━━
+<edit_file path="relative/path/file.ext">
+<find>exact text to find in the file</find>
+<replace>replacement text</replace>
+</edit_file>
+You can have multiple <find>/<replace> pairs inside one <edit_file> block.
+
+━━━ ACTION 3: RUN TERMINAL COMMANDS ━━━
+<run_command>npm install express</run_command>
+
+━━━ ACTION 4: READ USER'S SECOND BRAIN (KNOWLEDGE BASE) ━━━
+<read_brain>filename.md</read_brain>
+Use this action to READ a specific document from the user's personal knowledge base (Second Brain).
+A [SECOND BRAIN INDEX] section will list all available documents. When the user asks questions related to their stored knowledge, coding rules, design patterns, or any topic that may be covered in their brain documents, you MUST use <read_brain> to fetch and read the relevant document BEFORE answering.
+You can use multiple <read_brain> tags in one response to read multiple documents.
+After reading, incorporate the knowledge into your answer.
+
+RULES:
+1. ALWAYS respond in the same language the user uses.
+2. Use agent actions automatically when the user's request requires creating, editing files, or running commands.
+3. Outside of action blocks, briefly explain what you did.
+4. For code that is just for explanation (not to be saved), use standard markdown code fences.
+5. Be concise, professional, and helpful.
+6. When editing files, the <find> text must EXACTLY match existing content in the file.
+7. When a SECOND BRAIN INDEX is available, ALWAYS check it first and use <read_brain> to fetch relevant documents before answering questions about user knowledge, rules, or preferences.`;
+
+// ============================================================
+// Extension Activation
+// ============================================================
+
+export function activate(context: vscode.ExtensionContext) {
+    vscode.window.showInformationMessage('🔥 Connect AI V2 활성화 완료!');
+console.log('Connect AI extension activated.');
+
+    const provider = new SidebarChatProvider(context.extensionUri, context);
+    context.subscriptions.push(
+        vscode.window.registerWebviewViewProvider('connect-ai-lab-v2-view', provider, {
+            webviewOptions: { retainContextWhenHidden: true }
+        })
+    );
+
+    // New Chat
+    context.subscriptions.push(
+        vscode.commands.registerCommand('connect-ai-lab.newChat', () => {
+            provider.resetChat();
+        })
+    );
+
+    // Export Chat as Markdown
+    context.subscriptions.push(
+        vscode.commands.registerCommand('connect-ai-lab.exportChat', async () => {
+            await provider.exportChat();
+        })
+    );
+
+    // Focus Chat Input (Cmd+L)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('connect-ai-lab.focusChat', () => {
+            provider.focusInput();
+        })
+    );
+
+    // Explain Selected Code (right-click menu)
+    context.subscriptions.push(
+        vscode.commands.registerCommand('connect-ai-lab.explainSelection', () => {
+            const editor = vscode.window.activeTextEditor;
+            if (!editor) { return; }
+            const selection = editor.document.getText(editor.selection);
+            if (selection.trim()) {
+                provider.sendPromptFromExtension(`이 코드를 분석하고 설명해줘:\n\`\`\`\n${selection}\n\`\`\``);
+            }
+        })
+    );
+}
+
+export function deactivate() {}
+
+// ============================================================
+// Sidebar Chat Provider
+// ============================================================
+
+class SidebarChatProvider implements vscode.WebviewViewProvider {
+    private _view?: vscode.WebviewView;
+    private _chatHistory: { role: string; content: string }[] = [];
+    private _terminal?: vscode.Terminal;
+    private _ctx: vscode.ExtensionContext;
+
+    // 대화 표시용 (system prompt 제외, 유저에게 보여줄 것만 저장)
+    private _displayMessages: { text: string; role: string }[] = [];
+    private _isSyncingBrain: boolean = false;
+    private _brainEnabled: boolean = true; // 🧠 ON/OFF 토글 상태
+    private _abortController?: AbortController;
+    private _lastPrompt?: string;
+    private _lastModel?: string;
+
+    // 🏛️ AI 파라미터 튜닝
+    private _temperature: number;
+    private _topP: number;
+    private _topK: number;
+    private _systemPrompt: string;
+
+    constructor(private readonly _extensionUri: vscode.Uri, ctx: vscode.ExtensionContext) {
+        this._ctx = ctx;
+        this._temperature = ctx.globalState.get<number>('aiTemperature', 0.8);
+        this._topP = ctx.globalState.get<number>('aiTopP', 0.9);
+        this._topK = ctx.globalState.get<number>('aiTopK', 40);
+        this._systemPrompt = ctx.globalState.get<string>('aiSystemPrompt', SYSTEM_PROMPT);
+        this._restoreHistory();
+        // 두뇌 토글 상태 복원 (세션 뒤에도 유지)
+        this._brainEnabled = this._ctx.globalState.get<boolean>('brainEnabled', true);
+    }
+
+    /** 저장된 대화 기록 복원 */
+    private _restoreHistory() {
+        const saved = this._ctx.workspaceState.get<{ chat: any[]; display: any[] }>('chatState');
+        if (saved && saved.chat && saved.chat.length > 1) {
+            this._chatHistory = saved.chat;
+            this._displayMessages = saved.display || [];
+        } else {
+            this._initHistory();
+        }
+    }
+
+    /** 대화 기록 영구 저장 (워크스페이스 단위) */
+    private _saveHistory() {
+        this._ctx.workspaceState.update('chatState', {
+            chat: this._chatHistory,
+            display: this._displayMessages
+        });
+    }
+
+    private _initHistory() {
+        this._chatHistory = [{ role: 'system', content: this._systemPrompt }];
+        this._displayMessages = [];
+    }
+
+    public resetChat() {
+        this._initHistory();
+        this._saveHistory();
+        if (this._view) {
+            this._view.webview.postMessage({ type: 'clearChat' });
+        }
+        vscode.window.showInformationMessage('Connect AI: 새 대화가 시작되었습니다.');
+    }
+
+    /** 대화를 Markdown 파일로 내보내기 */
+    public async exportChat() {
+        if (this._displayMessages.length === 0) {
+            vscode.window.showWarningMessage('내보낼 대화가 없습니다.');
+            return;
+        }
+        let md = `# Connect AI — 대화 기록\n\n_${new Date().toLocaleString('ko-KR')}_\n\n---\n\n`;
+        for (const m of this._displayMessages) {
+            const label = m.role === 'user' ? '**👤 You**' : '**✦ Connect AI**';
+            md += `### ${label}\n\n${m.text}\n\n---\n\n`;
+        }
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (root) {
+            const filePath = path.join(root, `chat-export-${Date.now()}.md`);
+            fs.writeFileSync(filePath, md, 'utf-8');
+            const doc = await vscode.workspace.openTextDocument(filePath);
+            await vscode.window.showTextDocument(doc);
+            vscode.window.showInformationMessage(`대화가 ${path.basename(filePath)}로 저장되었습니다.`);
+        }
+    }
+
+    /** 채팅 입력창에 포커스 (Cmd+L) */
+    public focusInput() {
+        if (this._view) {
+            this._view.show?.(true);
+            this._view.webview.postMessage({ type: 'focusInput' });
+        }
+    }
+
+    /** 외부에서 프롬프트 전송 (예: 코드 선택 → 설명) */
+    public sendPromptFromExtension(prompt: string) {
+        if (this._view) {
+            this._view.show?.(true);
+            // 약간의 딜레이 후 전송 (뷰가 보이기를 기다림)
+            setTimeout(() => {
+                this._view?.webview.postMessage({ type: 'injectPrompt', value: prompt });
+            }, 300);
+        }
+    }
+
+    // --------------------------------------------------------
+    // Webview Lifecycle
+    // --------------------------------------------------------
+    public resolveWebviewView(
+        webviewView: vscode.WebviewView,
+        _context: vscode.WebviewViewResolveContext,
+        _token: vscode.CancellationToken,
+    ) {
+        this._view = webviewView;
+        webviewView.webview.options = {
+            enableScripts: true,
+            localResourceRoots: [this._extensionUri],
+        };
+
+        // 중요: HTML을 그리기 전에 메시지 리스너를 먼저 붙여야 Race Condition이 발생하지 않습니다!
+        webviewView.webview.onDidReceiveMessage(async (msg) => {
+            switch (msg.type) {
+                case 'getModels':
+                    await this._sendModels();
+                    break;
+                case 'prompt':
+                    await this._handlePrompt(msg.value, msg.model);
+                    break;
+                case 'promptWithFile':
+                    await this._handlePromptWithFile(msg.value, msg.model, msg.files);
+                    break;
+                case 'newChat':
+                    this.resetChat();
+                    break;
+                case 'ready':
+                    // 웹뷰가 준비되면 저장된 대화 기록 복원
+                    this._restoreDisplayMessages();
+                    break;
+                case 'openSettings':
+                    await this._handleSettingsMenu();
+                    break;
+                case 'syncBrain':
+                    await this._handleBrainMenu();
+                    break;
+                case 'stopGeneration':
+                    if (this._abortController) {
+                        this._abortController.abort();
+                        this._abortController = undefined;
+                    }
+                    break;
+                case 'regenerate':
+                    if (this._lastPrompt) {
+                        // Remove last AI response from history
+                        if (this._chatHistory.length > 0 && this._chatHistory[this._chatHistory.length - 1].role === 'assistant') {
+                            this._chatHistory.pop();
+                        }
+                        if (this._displayMessages.length > 0 && this._displayMessages[this._displayMessages.length - 1].role === 'ai') {
+                            this._displayMessages.pop();
+                        }
+                        await this._handlePrompt(this._lastPrompt, this._lastModel || '');
+                    }
+                    break;
+            }
+        });
+
+        // 리스너를 붙인 후 HTML을 렌더링합니다.
+        webviewView.webview.html = this._getHtml();
+    }
+
+    // --------------------------------------------------------
+    // Settings Menu (Engine + AI Tuning)
+    // --------------------------------------------------------
+    private async _handleSettingsMenu() {
+        if (!this._view) return;
+
+        const mainPick = await vscode.window.showQuickPick([
+            { label: '⚙️ AI 엔진 변경', description: '현재: ' + (getConfig().ollamaBase.includes('1234')?'LM Studio':'Ollama'), action: 'engine' },
+            { label: '🎛️ AI 파라미터 튜닝', description: `Temp: ${this._temperature}, Top-P: ${this._topP}, Top-K: ${this._topK}`, action: 'params' },
+            { label: '📝 시스템 프롬프트 설정', description: '에이전트의 기본 역할을 커스텀합니다.', action: 'prompt' }
+        ], { placeHolder: '설정 메뉴' });
+
+        if (!mainPick) return;
+
+        if (mainPick.action === 'engine') {
+            const pick = await vscode.window.showQuickPick([
+                { label: 'Ollama', description: '', action: 'ollama' },
+                { label: 'LM Studio', description: '', action: 'lmstudio' },
+            ], { placeHolder: 'AI 엔진을 선택하세요' });
+
+            if (!pick) return;
+            const target = (pick as any).action === 'ollama' ? 'http://127.0.0.1:11434' : 'http://127.0.0.1:1234';
+            await vscode.workspace.getConfiguration('connectAiLab').update('ollamaUrl', target, vscode.ConfigurationTarget.Global);
+            vscode.window.showInformationMessage(`AI 엔진이 [${pick.label}] 로 변경되었습니다.`);
+            await this._sendModels();
+        } 
+        else if (mainPick.action === 'params') {
+            const paramPick = await vscode.window.showQuickPick([
+                { label: `Temperature (${this._temperature})`, description: '답변의 창의성 (0.0 ~ 2.0)', action: 'temp' },
+                { label: `Top P (${this._topP})`, description: '단어 선택 확률 (0.0 ~ 1.0)', action: 'topp' },
+                { label: `Top K (${this._topK})`, description: '단어 선택 범위 (1 ~ 100)', action: 'topk' },
+            ], { placeHolder: '파라미터를 선택하세요' });
+
+            if (!paramPick) return;
+
+            if (paramPick.action === 'temp') {
+                const val = await vscode.window.showInputBox({ prompt: 'Temperature 값 (0.0~2.0)', value: this._temperature.toString() });
+                if (val && !isNaN(Number(val))) {
+                    this._temperature = Number(val);
+                    this._ctx.globalState.update('aiTemperature', this._temperature);
+                    vscode.window.showInformationMessage(`Temperature가 ${this._temperature}로 변경되었습니다.`);
+                }
+            } else if (paramPick.action === 'topp') {
+                const val = await vscode.window.showInputBox({ prompt: 'Top P 값 (0.0~1.0)', value: this._topP.toString() });
+                if (val && !isNaN(Number(val))) {
+                    this._topP = Number(val);
+                    this._ctx.globalState.update('aiTopP', this._topP);
+                    vscode.window.showInformationMessage(`Top P가 ${this._topP}로 변경되었습니다.`);
+                }
+            } else if (paramPick.action === 'topk') {
+                const val = await vscode.window.showInputBox({ prompt: 'Top K 값 (1~100)', value: this._topK.toString() });
+                if (val && !isNaN(Number(val))) {
+                    this._topK = Number(val);
+                    this._ctx.globalState.update('aiTopK', this._topK);
+                    vscode.window.showInformationMessage(`Top K가 ${this._topK}로 변경되었습니다.`);
+                }
+            }
+        }
+        else if (mainPick.action === 'prompt') {
+            const val = await vscode.window.showInputBox({ 
+                prompt: '시스템 프롬프트 (비워두면 기본값으로 초기화됩니다)', 
+                value: this._systemPrompt === SYSTEM_PROMPT ? '' : this._systemPrompt,
+                ignoreFocusOut: true
+            });
+            if (val !== undefined) {
+                this._systemPrompt = val.trim() || SYSTEM_PROMPT;
+                this._ctx.globalState.update('aiSystemPrompt', this._systemPrompt);
+                this._initHistory();
+                this._saveHistory();
+                vscode.window.showInformationMessage('시스템 프롬프트가 변경되어 새 대화가 시작되었습니다.');
+                if (this._view) this._view.webview.postMessage({ type: 'clearChat' });
+            }
+        }
+    }
+
+    // --------------------------------------------------------
+    // Fetch installed Ollama models
+    // --------------------------------------------------------
+    private async _sendModels() {
+        if (!this._view) { return; }
+        const { ollamaBase, defaultModel } = getConfig();
+        try {
+            const isLMStudio = ollamaBase.includes('1234') || ollamaBase.includes('v1');
+            let models: string[] = [];
+
+            if (isLMStudio) {
+                const res = await axios.get(`${ollamaBase}/v1/models`, { timeout: 3000 });
+                // LM Studio (OpenAI 규격) 응답 파싱
+                models = res.data.data.map((m: any) => m.id);
+            } else {
+                const res = await axios.get(`${ollamaBase}/api/tags`, { timeout: 3000 });
+                // Ollama 규격 응답 파싱
+                models = res.data.models.map((m: any) => m.name);
+            }
+
+            if (models.length === 0) {
+                models = [defaultModel];
+            } else if (!models.includes(defaultModel)) {
+                models.unshift(defaultModel);
+            }
+            this._view.webview.postMessage({ type: 'modelsList', value: models });
+        } catch {
+            this._view.webview.postMessage({ type: 'modelsList', value: [defaultModel] });
+        }
+    }
+
+    // --------------------------------------------------------
+    // Second Brain Menu (QuickPick)
+    // --------------------------------------------------------
+    private async _handleBrainMenu() {
+        if (!this._view) { return; }
+        
+        const brainDir = path.join(os.homedir(), '.connect-ai-brain');
+        const isSynced = fs.existsSync(brainDir);
+        const { secondBrainRepo } = getConfig();
+        const statusLabel = this._brainEnabled ? '🟢 ON' : '🔴 OFF';
+        
+        const items: any[] = [];
+
+        if (!isSynced && !secondBrainRepo) {
+            // 아직 한 번도 연동한 적 없음
+            items.push({ label: '🔗 깃허브 연결하기', description: '지식 저장소 GitHub URL 입력', action: 'sync' });
+        } else {
+            items.push(
+                { label: `🧠 지식 모드: ${statusLabel}`, description: '지식 기반 코딩 ON/OFF 전환', action: 'toggle' },
+                { label: '🔄 지식 새로고침', description: `현재: ${secondBrainRepo?.split('/').pop() || '없음'}`, action: 'resync' },
+                { label: '🔗 다른 깃허브로 변경', description: '새로운 지식 저장소 URL 입력', action: 'change' },
+            );
+        }
+
+        const pick = await vscode.window.showQuickPick(items, { placeHolder: '🧠 Second Brain 관리' });
+        if (!pick) return;
+
+        switch (pick.action) {
+            case 'sync':
+                await this._syncSecondBrain();
+                break;
+            case 'toggle':
+                this._brainEnabled = !this._brainEnabled;
+                this._ctx.globalState.update('brainEnabled', this._brainEnabled);
+                const state = this._brainEnabled ? '🟢 ON — 지식 기반 코딩 활성화!' : '🔴 OFF — 일반 모드';
+                vscode.window.showInformationMessage(`🧠 Second Brain: ${state}`);
+                this._view.webview.postMessage({ type: 'response', value: `🧠 **지식 모드 ${this._brainEnabled ? 'ON' : 'OFF'}** — ${this._brainEnabled ? '이제부터 회원님의 지식을 바탕으로 모든 답변을 생성합니다.' : '일반 AI 모드로 전환되었습니다.'}` });
+                break;
+            case 'resync':
+                await this._syncSecondBrain();
+                break;
+            case 'change':
+                // 기존 URL을 지우고 새로 입력받기
+                const newUrl = await vscode.window.showInputBox({
+                    prompt: '🧠 새로운 지식 저장소 깃허브 URL을 입력하세요',
+                    placeHolder: '예: https://github.com/사용자/새저장소',
+                    value: secondBrainRepo
+                });
+                if (!newUrl) return;
+                await vscode.workspace.getConfiguration('connectAiLab').update('secondBrainRepo', newUrl, vscode.ConfigurationTarget.Global);
+                vscode.window.showInformationMessage('✅ 새로운 깃허브 주소가 저장되었습니다. 동기화를 시작합니다!');
+                await this._syncSecondBrain();
+                break;
+        }
+    }
+
+    // --------------------------------------------------------
+    // Second Brain (Github Repo Knowledge Sync)
+    // --------------------------------------------------------
+    private async _syncSecondBrain() {
+        if (!this._view) { return; }
+        if (this._isSyncingBrain) {
+            vscode.window.showWarningMessage('동기화가 이미 진행 중입니다. 잠시만 기다려주세요!');
+            return;
+        }
+
+        let { secondBrainRepo } = getConfig();
+        
+        // UX 극대화: 안 채워져 있으면 에러 내뱉지 말고 입력창 띄우기!
+        if (!secondBrainRepo) {
+            const inputUrl = await vscode.window.showInputBox({
+                prompt: '🧠 뇌를 연결할 깃허브 저장소 주소를 입력하세요 (Second Brain URL)',
+                placeHolder: '예: https://github.com/사용자/레포지토리'
+            });
+            if (!inputUrl) { return; } // 사용자가 취소한 경우 종료
+            
+            // 설정창에 자동 입력 및 저장
+            await vscode.workspace.getConfiguration('connectAiLab').update('secondBrainRepo', inputUrl, vscode.ConfigurationTarget.Global);
+            secondBrainRepo = inputUrl;
+            vscode.window.showInformationMessage('✅ 깃허브 주소가 자동 저장되었습니다. 즉시 동기화를 시작합니다!');
+        }
+
+        this._isSyncingBrain = true;
+        const brainDir = path.join(os.homedir(), '.connect-ai-brain');
+        try {
+            this._view.webview.postMessage({ type: 'response', value: '🧠 **Second Brain 동기화 시작 중... 깃허브에서 지식을 복제합니다.**' });
+            
+            if (fs.existsSync(brainDir)) {
+                // 깔끔한 최신화를 위해 기존 폴더 삭제 후 다시 클론 (다중 클릭 방지)
+                fs.rmSync(brainDir, { recursive: true, force: true });
+            }
+            
+            await execAsync(`git clone --depth 1 ${secondBrainRepo.replace(/[;&|$()]/g, '')} "${brainDir}"`);
+            vscode.window.showInformationMessage('🧠 Second Brain 지식 연동이 완료되었습니다!');
+            this._view.webview.postMessage({ type: 'response', value: '✅ **Second Brain 업데이트 완료! 이제 회원님의 뇌(문서)를 바탕으로 특화된 코딩을 진행합니다.**' });
+        } catch (error: any) {
+            vscode.window.showErrorMessage(`Second Brain 동기화 실패: ${error.message}`);
+            this._view.webview.postMessage({ type: 'error', value: `⚠️ 동기화 실패: ${error.message}` });
+        } finally {
+            this._isSyncingBrain = false;
+        }
+    }
+
+    // 재귀 탐색 유틸리티 (하위 폴더까지 .md/.txt 파일 긁어옴)
+    private _findBrainFiles(dir: string): string[] {
+        let results: string[] = [];
+        try {
+            const list = fs.readdirSync(dir);
+            for (const file of list) {
+                const filePath = path.join(dir, file);
+                const stat = fs.statSync(filePath);
+                if (stat && stat.isDirectory()) {
+                    if (file !== '.git' && file !== 'node_modules' && file !== '.obsidian') {
+                        results = results.concat(this._findBrainFiles(filePath));
+                    }
+                } else {
+                    if (file.endsWith('.md') || file.endsWith('.txt')) {
+                        results.push(filePath);
+                    }
+                }
+            }
+        } catch (e) { /* skip unreadable dirs */ }
+        return results;
+    }
+
+    // 목차(인덱스)만 생성 — 내용은 AI가 <read_brain>으로 직접 열람
+    private _getSecondBrainContext(): string {
+        const brainDir = path.join(os.homedir(), '.connect-ai-brain');
+        if (!fs.existsSync(brainDir)) return '';
+
+        const files = this._findBrainFiles(brainDir);
+        if (files.length === 0) return '';
+
+        // 파일 목록 + 첫 줄(제목) 요약을 목차로 생성
+        const index: string[] = [];
+        for (const file of files) {
+            const relativePath = path.relative(brainDir, file);
+            try {
+                const firstLine = fs.readFileSync(file, 'utf-8').split('\n').find(l => l.trim().length > 0) || '';
+                // 제목 부분만 추출 (# 헤더 또는 첫 줄)
+                const title = firstLine.replace(/^#+\s*/, '').slice(0, 80);
+                index.push(`  📄 ${relativePath}  →  "${title}"`);
+            } catch {
+                index.push(`  📄 ${relativePath}`);
+            }
+        }
+
+        return `\n\n[SECOND BRAIN INDEX — User's Personal Knowledge Base (${files.length} documents)]\nThe user has synced a personal knowledge repository. Below is the TABLE OF CONTENTS only.\nTo read the actual content of any document, use: <read_brain>filename_or_path</read_brain>\n\n${index.join('\n')}\n\n`;
+    }
+
+    // AI가 <read_brain>태그로 요청한 파일의 실제 내용을 읽어서 반환
+    private _readBrainFile(filename: string): string {
+        const brainDir = path.join(os.homedir(), '.connect-ai-brain');
+        if (!fs.existsSync(brainDir)) return '[ERROR] Second Brain이 동기화되지 않았습니다. 🧠 버튼을 먼저 눌러주세요.';
+
+        // 정확한 경로 매칭 시도
+        const exactPath = path.join(brainDir, filename);
+        if (fs.existsSync(exactPath)) {
+            const content = fs.readFileSync(exactPath, 'utf-8');
+            return content.slice(0, 8000); // 파일당 최대 8000자
+        }
+
+        // 파일명만으로 퍼지 검색 (하위 폴더에 있을 수 있으므로)
+        const allFiles = this._findBrainFiles(brainDir);
+        const match = allFiles.find(f => 
+            path.basename(f) === filename || 
+            path.basename(f) === filename + '.md' ||
+            f.includes(filename)
+        );
+
+        if (match) {
+            const content = fs.readFileSync(match, 'utf-8');
+            return content.slice(0, 8000);
+        }
+
+        return `[NOT FOUND] "${filename}" 파일을 Second Brain에서 찾을 수 없습니다. 목차(INDEX)를 다시 확인해주세요.`;
+    }
+
+    /** 저장된 대화 메시지를 웹뷰에 다시 전송 (복원) */
+    private _restoreDisplayMessages() {
+        if (!this._view || this._displayMessages.length === 0) { return; }
+        this._view.webview.postMessage({
+            type: 'restoreMessages',
+            value: this._displayMessages
+        });
+    }
+
+    // --------------------------------------------------------
+    // Build workspace file tree + read key files
+    // --------------------------------------------------------
+    private _getWorkspaceContext(): string {
+        const root = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+        if (!root) { return ''; }
+
+        // --- 1. File tree ---
+        const lines: string[] = [];
+        let count = 0;
+
+        const walk = (dir: string, prefix: string) => {
+            if (count >= getConfig().maxTreeFiles) { return; }
+            let entries: fs.Dirent[];
+            try {
+                entries = fs.readdirSync(dir, { withFileTypes: true });
+            } catch { return; }
+
+            entries.sort((a, b) => {
+                if (a.isDirectory() && !b.isDirectory()) { return -1; }
+                if (!a.isDirectory() && b.isDirectory()) { return 1; }
+                return a.name.localeCompare(b.name);
+            });
+
+            for (const entry of entries) {
+                if (count >= getConfig().maxTreeFiles) { break; }
+                if (EXCLUDED_DIRS.has(entry.name)) { continue; }
+                if (entry.name.startsWith('.') && entry.isDirectory()) { continue; }
+
+                if (entry.isDirectory()) {
+                    lines.push(`${prefix}📁 ${entry.name}/`);
+                    count++;
+                    walk(path.join(dir, entry.name), prefix + '  ');
+                } else {
+                    lines.push(`${prefix}📄 ${entry.name}`);
+                    count++;
+                }
+            }
+        };
+        walk(root, '');
+
+        let result = '';
+        if (lines.length > 0) {
+            result += `\n\n[프로젝트 파일 구조]\n${lines.join('\n')}`;
+        }
+
+        // --- 2. Auto-read key project files ---
+        const keyFiles = [
+            'package.json', 'tsconfig.json', 'vite.config.ts', 'vite.config.js',
+            'next.config.js', 'next.config.ts', 'README.md',
+            'index.html', 'app.js', 'app.ts', 'main.ts', 'main.js',
+            'src/index.ts', 'src/index.js', 'src/App.tsx', 'src/App.jsx',
+            'src/main.ts', 'src/main.js'
+        ];
+        let totalRead = 0;
+        const MAX_AUTO_READ = 15_000; // chars total
+
+        for (const kf of keyFiles) {
+            if (totalRead >= MAX_AUTO_READ) { break; }
+            const abs = path.join(root, kf);
+            if (fs.existsSync(abs)) {
+                try {
+                    const content = fs.readFileSync(abs, 'utf-8');
+                    if (content.length < 5000) {
+                        result += `\n\n[파일 내용: ${kf}]\n\`\`\`\n${content}\n\`\`\``;
+                        totalRead += content.length;
+                    }
+                } catch { /* skip */ }
+            }
+        }
+
+        return result;
+    }
+
+    // --------------------------------------------------------
+    // Handle prompt with file attachments (multimodal)
+    // --------------------------------------------------------
+    private async _handlePromptWithFile(prompt: string, modelName: string, files: {name: string, type: string, data: string}[]) {
+        if (!this._view) { return; }
+
+        try {
+            const { ollamaBase, defaultModel, timeout } = getConfig();
+            let isLMStudio = ollamaBase.includes('1234') || ollamaBase.includes('v1');
+            let apiUrl = isLMStudio ? `${ollamaBase}/v1/chat/completions` : `${ollamaBase}/api/chat`;
+
+            if (!isLMStudio) {
+                try { await axios.get(`${ollamaBase}/api/tags`, { timeout: 1000 }); }
+                catch { apiUrl = 'http://127.0.0.1:1234/v1/chat/completions'; isLMStudio = true; }
+            }
+
+            // Separate images from text files
+            const imageFiles = files.filter(f => f.type.startsWith('image/'));
+            const textFiles = files.filter(f => !f.type.startsWith('image/'));
+
+            // Build text context from non-image files
+            let fileContext = '';
+            for (const f of textFiles) {
+                // data is base64 encoded, decode to utf-8 text
+                const decoded = Buffer.from(f.data, 'base64').toString('utf-8');
+                fileContext += `\n\n[첨부 파일: ${f.name}]\n\`\`\`\n${decoded.slice(0, 20000)}\n\`\`\``;
+            }
+
+            const userContent = prompt + fileContext;
+            this._chatHistory.push({ role: 'user', content: userContent });
+            this._displayMessages.push({ text: prompt + (files.length > 0 ? `\n📎 ${files.map(f=>f.name).join(', ')}` : ''), role: 'user' });
+
+            // Build messages
+            const reqMessages = [...this._chatHistory];
+            if (reqMessages.length > 0 && reqMessages[0].role === 'system') {
+                const editor = vscode.window.activeTextEditor;
+                let contextBlock = '';
+                if (editor && editor.document.uri.scheme === 'file') {
+                    const text = editor.document.getText();
+                    const name = path.basename(editor.document.fileName);
+                    if (text.trim().length > 0 && text.length < MAX_CONTEXT_SIZE) {
+                        contextBlock = `\n\n[Currently open file: ${name}]\n\`\`\`\n${text}\n\`\`\``;
+                    }
+                }
+                const workspaceCtx = this._getWorkspaceContext();
+                const brainCtx = this._brainEnabled ? this._getSecondBrainContext() : '';
+                reqMessages[0] = {
+                    role: 'system',
+                    content: `${this._systemPrompt}\n\n[BACKGROUND CONTEXT]\n${contextBlock}\n${workspaceCtx}\n${brainCtx}`
+                };
+            }
+
+            // Build image payload for vision models
+            const images = imageFiles.map(f => f.data); // already base64
+
+            let aiMessage = '';
+            this._view.webview.postMessage({ type: 'streamStart' });
+
+            if (isLMStudio) {
+                // OpenAI-compatible format with image_url
+                const lastUserMsg = reqMessages[reqMessages.length - 1];
+                const contentParts: any[] = [{ type: 'text', text: lastUserMsg.content }];
+                for (const img of images) {
+                    contentParts.push({ type: 'image_url', image_url: { url: `data:image/png;base64,${img}` } });
+                }
+                reqMessages[reqMessages.length - 1] = { role: 'user', content: contentParts as any };
+
+                const streamBody = {
+                    model: modelName || defaultModel,
+                    messages: reqMessages,
+                    stream: true,
+                    max_tokens: 4096, temperature: this._temperature, top_p: this._topP
+                };
+                const response = await axios.post(apiUrl, streamBody, { timeout, responseType: 'stream' });
+                await new Promise<void>((resolve, reject) => {
+                    const stream = response.data;
+                    let buffer = '';
+                    stream.on('data', (chunk: Buffer) => {
+                        buffer += chunk.toString();
+                        const lines = buffer.split('\n'); buffer = lines.pop() || '';
+                        for (const line of lines) {
+                            if (!line.trim() || line.trim() === 'data: [DONE]') continue;
+                            try {
+                                const raw = line.startsWith('data: ') ? line.slice(6) : line;
+                                const json = JSON.parse(raw);
+                                const token = json.choices?.[0]?.delta?.content || '';
+                                if (token) { aiMessage += token; this._view!.webview.postMessage({ type: 'streamChunk', value: token }); }
+                            } catch {}
+                        }
+                    });
+                    stream.on('end', () => resolve());
+                    stream.on('error', (err: any) => reject(err));
+                });
+            } else {
+                // Ollama native format with images array
+                const streamBody: any = {
+                    model: modelName || defaultModel,
+                    messages: reqMessages,
+                    stream: true,
+                    options: { num_predict: 4096, temperature: this._temperature, top_p: this._topP, top_k: this._topK }
+                };
+                // Attach images to the last user message for Ollama
+                if (images.length > 0) {
+                    streamBody.messages = reqMessages.map((m: any, i: number) => 
+                        i === reqMessages.length - 1 ? { ...m, images } : m
+                    );
+                }
+                const response = await axios.post(apiUrl, streamBody, { timeout, responseType: 'stream' });
+                await new Promise<void>((resolve, reject) => {
+                    const stream = response.data;
+                    let buffer = '';
+                    stream.on('data', (chunk: Buffer) => {
+                        buffer += chunk.toString();
+                        const lines = buffer.split('\n'); buffer = lines.pop() || '';
+                        for (const line of lines) {
+                            if (!line.trim()) continue;
+                            try {
+                                const json = JSON.parse(line);
+                                const token = json.message?.content || '';
+                                if (token) { aiMessage += token; this._view!.webview.postMessage({ type: 'streamChunk', value: token }); }
+                            } catch {}
+                        }
+                    });
+                    stream.on('end', () => resolve());
+                    stream.on('error', (err: any) => reject(err));
+                });
+            }
+
+            this._view.webview.postMessage({ type: 'streamEnd' });
+            this._chatHistory.push({ role: 'assistant', content: aiMessage });
+
+            const report = this._executeActions(aiMessage);
+            if (report.length > 0) {
+                const reportMsg = `\n\n---\n**에이전트 작업 결과**\n${report.join('\n')}`;
+                this._view.webview.postMessage({ type: 'streamChunk', value: reportMsg });
+                this._view.webview.postMessage({ type: 'streamEnd' });
+                aiMessage += reportMsg;
+            }
+            this._displayMessages.push({ text: aiMessage, role: 'ai' });
+            this._saveHistory();
+
+        } catch (error: any) {
+            const errMsg = error.code === 'ECONNREFUSED'
+                ? '⚠️ AI 서버에 연결할 수 없습니다. 로컬 서버를 켜주세요.'
+                : `⚠️ 오류: ${error.message}`;
+            this._view.webview.postMessage({ type: 'error', value: errMsg });
+        }
+    }
+
+    // --------------------------------------------------------
+    // Handle user prompt → Ollama → agent actions → response
+    // --------------------------------------------------------
+    private async _handlePrompt(prompt: string, modelName: string) {
+        if (!this._view) { return; }
+
+        try {
+            // 1. Context: active editor content
+            const editor = vscode.window.activeTextEditor;
+            let contextBlock = '';
+            if (editor && editor.document.uri.scheme === 'file') {
+                const text = editor.document.getText();
+                const name = path.basename(editor.document.fileName);
+                if (text.trim().length > 0 && text.length < MAX_CONTEXT_SIZE) {
+                    contextBlock = `\n\n[Currently open file: ${name}]\n\`\`\`\n${text}\n\`\`\``;
+                }
+            }
+
+            // 2. Context: workspace file tree + key file contents
+            const workspaceCtx = this._getWorkspaceContext();
+            
+            // 2.5 Inject Second Brain Knowledge (ON/OFF 토글 반영)
+            const brainCtx = this._brainEnabled ? this._getSecondBrainContext() : '';
+
+            // 3. Push user message
+            this._chatHistory.push({
+                role: 'user',
+                content: prompt
+            });
+
+            // 저장용: 유저 메시지 기록 (프롬프트만)
+            this._displayMessages.push({ text: prompt, role: 'user' });
+
+            // 4. Call Ollama
+            const { ollamaBase, defaultModel, timeout } = getConfig();
+
+            // 이번 요청에만 사용할 임시 메시지 배열 생성
+            const reqMessages = [...this._chatHistory];
+            // 시스템 프롬프트(0번 인덱스)에 현재 작업 환경 정보를 주입
+            if (reqMessages.length > 0 && reqMessages[0].role === 'system') {
+                reqMessages[0] = {
+                    role: 'system',
+                    content: `${SYSTEM_PROMPT}\n\n[BACKGROUND CONTEXT - DO NOT EXPLAIN THIS TO THE USER UNLESS ASKED]\n${contextBlock}\n${workspaceCtx}\n${brainCtx}`
+                };
+            }
+
+            let isLMStudio = ollamaBase.includes('1234') || ollamaBase.includes('v1');
+            let apiUrl = isLMStudio ? `${ollamaBase}/v1/chat/completions` : `${ollamaBase}/api/chat`;
+
+            // Auto-Failover Logic: 유저가 설정을 안 건드렸더라도 Ollama가 죽어있으면 자동으로 LM Studio를 찾아갑니다!
+            if (!isLMStudio) {
+                try {
+                    await axios.get(`${ollamaBase}/api/tags`, { timeout: 1000 });
+                } catch (err: any) {
+                    // Ollama 연결 실패 시 LM Studio 1234 포트로 강제 우회
+                    apiUrl = 'http://127.0.0.1:1234/v1/chat/completions';
+                    isLMStudio = true;
+                }
+            }
+
+            // ═══ STREAMING API CALL ═══
+            let aiMessage = '';
+            const streamBody = {
+                model: modelName || defaultModel,
+                messages: reqMessages,
+                stream: true,
+                ...(isLMStudio 
+                    ? { max_tokens: 4096, temperature: this._temperature, top_p: this._topP } 
+                    : { options: { num_predict: 4096, temperature: this._temperature, top_p: this._topP, top_k: this._topK } }),
+            };
+
+            // 스트리밍: 웹뷰에 'streamStart' 로 빈 메시지 생성 후 'streamChunk'로 실시간 업데이트
+            this._view.webview.postMessage({ type: 'streamStart' });
+            this._lastPrompt = prompt;
+            this._lastModel = modelName;
+            this._abortController = new AbortController();
+
+            const response = await axios.post(apiUrl, streamBody, { 
+                timeout, 
+                responseType: 'stream',
+                signal: this._abortController.signal
+            });
+
+            await new Promise<void>((resolve, reject) => {
+                const stream = response.data;
+                let buffer = '';
+                stream.on('data', (chunk: Buffer) => {
+                    buffer += chunk.toString();
+                    const lines = buffer.split('\n');
+                    buffer = lines.pop() || '';
+                    for (const line of lines) {
+                        if (!line.trim() || line.trim() === 'data: [DONE]') continue;
+                        try {
+                            const raw = line.startsWith('data: ') ? line.slice(6) : line;
+                            const json = JSON.parse(raw);
+                            let token = '';
+                            if (isLMStudio) {
+                                token = json.choices?.[0]?.delta?.content || '';
+                            } else {
+                                token = json.message?.content || '';
+                            }
+                            if (token) {
+                                aiMessage += token;
+                                this._view!.webview.postMessage({ type: 'streamChunk', value: token });
+                            }
+                        } catch { /* skip malformed JSON */ }
+                    }
+                });
+                stream.on('end', () => resolve());
+                stream.on('error', (err: any) => reject(err));
+            });
+
+            // 스트리밍 완료 알림
+            this._view.webview.postMessage({ type: 'streamEnd' });
+
+            // 4.5 Second Brain 자율 열람: AI가 <read_brain>을 사용했는지 확인
+            const brainReads = [...aiMessage.matchAll(/<read_brain>([\s\S]*?)<\/read_brain>/g)];
+            if (brainReads.length > 0) {
+                let brainContent = '';
+                for (const match of brainReads) {
+                    const requestedFile = match[1].trim();
+                    const fileContent = this._readBrainFile(requestedFile);
+                    brainContent += `\n\n[BRAIN DOCUMENT: ${requestedFile}]\n${fileContent}\n`;
+                }
+                const cleanedResponse = aiMessage.replace(/<read_brain>[\s\S]*?<\/read_brain>/g, '').trim();
+                reqMessages.push({ role: 'assistant', content: cleanedResponse || '문서를 열람 중입니다...' });
+                reqMessages.push({ role: 'user', content: `[SYSTEM: The following documents were retrieved from the user\'s Second Brain. Use this information to provide a complete and accurate answer to the user\'s original question.]\n${brainContent}\n\nNow answer the user\'s question using the above knowledge. Do NOT use <read_brain> again.` });
+
+                // Follow-up은 non-stream (지식 재질의는 빠르게)
+                const followUp = await axios.post(apiUrl, {
+                    model: modelName || defaultModel,
+                    messages: reqMessages,
+                    stream: false,
+                    ...(isLMStudio 
+                        ? { max_tokens: 4096, temperature: this._temperature, top_p: this._topP } 
+                        : { options: { num_predict: 4096, temperature: this._temperature, top_p: this._topP, top_k: this._topK } }),
+                }, { timeout });
+
+                aiMessage = isLMStudio
+                    ? followUp.data.choices[0].message.content
+                    : followUp.data.message.content;
+                // 지식 재질의 결과는 전체 교체
+                this._view.webview.postMessage({ type: 'response', value: aiMessage });
+            }
+
+            this._chatHistory.push({ role: 'assistant', content: aiMessage });
+
+            // 5. Execute agent actions
+            const report = this._executeActions(aiMessage);
+
+            // 6. Agent report 추가 (있을 때만)
+            if (report.length > 0) {
+                const reportMsg = `\n\n---\n**에이전트 작업 결과**\n${report.join('\n')}`;
+                this._view.webview.postMessage({ type: 'streamChunk', value: reportMsg });
+                this._view.webview.postMessage({ type: 'streamEnd' });
+                aiMessage += reportMsg;
+            }
+
+            // 저장용: AI 응답 기록
+            this._displayMessages.push({ text: aiMessage, role: 'ai' });
+
+            // 메모리 누수 방지: 대화 이력 최대 50개 반턱으로 제한
+            const MAX_HISTORY = 50;
+            if (this._chatHistory.length > MAX_HISTORY + 1) {
+                this._chatHistory = [this._chatHistory[0], ...this._chatHistory.slice(-(MAX_HISTORY))];
+            }
+            if (this._displayMessages.length > MAX_HISTORY) {
+                this._displayMessages = this._displayMessages.slice(-MAX_HISTORY);
+            }
+            this._saveHistory();
+
+        } catch (error: any) {
+            const { ollamaBase } = getConfig();
+            const isLM = ollamaBase.includes('1234') || ollamaBase.includes('v1');
+            const targetName = isLM ? "LM Studio" : "Ollama";
+            
+            const errMsg = error.code === 'ECONNREFUSED'
+                ? `⚠️ ${targetName} 서버에 연결할 수 없습니다.\n앱에서 로컬 서버가 켜져 있는지(Start Server) 확인해주세요.`
+                : (error.response?.status === 400 || error.response?.status === 413)
+                    ? `⚠️ 컨텍스트 용량 초과: 입력이 너무 깁니다. 새 대화(+)를 시작하거나 질문을 줄여주세요.`
+                    : `⚠️ 오류: ${error.message}`;
+            this._view.webview.postMessage({ type: 'error', value: errMsg });
+        }
+    }
+
+    // --------------------------------------------------------
+    // Execute ALL agent actions from AI response
+    // --------------------------------------------------------
+    private _executeActions(aiMessage: string): string[] {
+        const report: string[] = [];
+        let rootPath = vscode.workspace.workspaceFolders?.[0]?.uri.fsPath;
+
+        // Fallback to active editor directory if no workspace folder is open
+        if (!rootPath && vscode.window.activeTextEditor && vscode.window.activeTextEditor.document.uri.scheme === 'file') {
+            rootPath = path.dirname(vscode.window.activeTextEditor.document.uri.fsPath);
+        }
+
+        if (!rootPath) {
+            const hasActions = /<(?:create_file|edit_file|run_command|file)/i.test(aiMessage);
+            if (hasActions) {
+                report.push('❌ 폴더가 열려있지 않습니다. File → Open Folder로 폴더를 열거나 파일을 열어주세요.');
+            }
+            return report;
+        }
+
+        // ACTION 1: Create files
+        const createRegex = /<(?:create_file|file)\s+(?:path|file|name)=['"]?([^'">]+)['"]?[^>]*>([\s\S]*?)<\/(?:create_file|file)>/gi;
+        let match: RegExpExecArray | null;
+        let firstCreatedFile = '';
+
+        while ((match = createRegex.exec(aiMessage)) !== null) {
+            const relPath = match[1].trim();
+            let content = match[2].trim();
+            
+            // Strip markdown code fences if AI accidentally wrapped the content inside the xml
+            if (content.startsWith('```')) {
+                const lines = content.split('\n');
+                if (lines[0].startsWith('```')) lines.shift();
+                if (lines.length > 0 && lines[lines.length - 1].startsWith('```')) lines.pop();
+                content = lines.join('\n').trim();
+            }
+
+            try {
+                const absPath = path.join(rootPath, relPath);
+                const dir = path.dirname(absPath);
+                if (!fs.existsSync(dir)) {
+                    fs.mkdirSync(dir, { recursive: true });
+                }
+                fs.writeFileSync(absPath, content, 'utf-8');
+                report.push(`✅ 생성: ${relPath}`);
+                if (!firstCreatedFile) { firstCreatedFile = absPath; }
+            } catch (err: any) {
+                report.push(`❌ 생성 실패: ${relPath} — ${err.message}`);
+            }
+        }
+
+        // Open first created file
+        if (firstCreatedFile) {
+            vscode.window.showTextDocument(vscode.Uri.file(firstCreatedFile), { preview: false });
+        }
+
+        // ACTION 2: Edit files
+        const editRegex = /<(?:edit_file|edit)\s+(?:path|file|name)=['"]?([^'">]+)['"]?[^>]*>([\s\S]*?)<\/(?:edit_file|edit)>/gi;
+        while ((match = editRegex.exec(aiMessage)) !== null) {
+            const relPath = match[1].trim();
+            const body = match[2];
+            const absPath = path.join(rootPath, relPath);
+
+            if (!fs.existsSync(absPath)) {
+                report.push(`❌ 편집 실패: ${relPath} — 파일이 존재하지 않습니다.`);
+                continue;
+            }
+
+            try {
+                let fileContent = fs.readFileSync(absPath, 'utf-8');
+                const findReplaceRegex = /<find>([\s\S]*?)<\/find>\s*<replace>([\s\S]*?)<\/replace>/g;
+                let frMatch: RegExpExecArray | null;
+                let editCount = 0;
+
+                while ((frMatch = findReplaceRegex.exec(body)) !== null) {
+                    const findText = frMatch[1];
+                    const replaceText = frMatch[2];
+                    if (fileContent.includes(findText)) {
+                        fileContent = fileContent.replace(findText, replaceText);
+                        editCount++;
+                    } else {
+                        report.push(`⚠️ ${relPath}: 일치하는 텍스트를 찾지 못했습니다.`);
+                    }
+                }
+
+                if (editCount > 0) {
+                    fs.writeFileSync(absPath, fileContent, 'utf-8');
+                    report.push(`✏️ 편집 완료: ${relPath} (${editCount}건 수정)`);
+                    // Open edited file
+                    vscode.window.showTextDocument(vscode.Uri.file(absPath), { preview: false });
+                }
+            } catch (err: any) {
+                report.push(`❌ 편집 실패: ${relPath} — ${err.message}`);
+            }
+        }
+
+        // ACTION 3: Run commands
+        const cmdRegex = /<(?:run_command|command|bash|terminal)>([\s\S]*?)<\/(?:run_command|command|bash|terminal)>/gi;
+        while ((match = cmdRegex.exec(aiMessage)) !== null) {
+            let cmd = match[1].trim();
+            // Clean up if AI outputs markdown inside
+            if (cmd.startsWith('```')) {
+                const lines = cmd.split('\n');
+                if (lines[0].startsWith('```')) lines.shift();
+                if (lines.length > 0 && lines[lines.length - 1].startsWith('```')) lines.pop();
+                cmd = lines.join('\n').trim();
+            }
+            try {
+                if (!this._terminal || this._terminal.exitStatus !== undefined) {
+                    this._terminal = vscode.window.createTerminal({
+                        name: '🚀 Connect AI',
+                        cwd: rootPath
+                    });
+                }
+                this._terminal.show();
+                this._terminal.sendText(cmd);
+                report.push(`🖥️ 실행: ${cmd}`);
+            } catch (err: any) {
+                report.push(`❌ 명령 실패: ${cmd} — ${err.message}`);
+            }
+        }
+
+        // Show notification
+        const successCount = report.filter(r => r.startsWith('✅') || r.startsWith('✏️') || r.startsWith('🖥️')).length;
+        if (successCount > 0) {
+            vscode.window.showInformationMessage(`Connect AI: ${successCount}개 에이전트 작업 완료!`);
+        }
+
+        return report;
+    }
+
+
+    // ============================================================
+    // Webview HTML — CINEMATIC UI v3 (Content-Grade Visuals)
+    // ============================================================
+    private _getHtml(): string {
+        return `<!DOCTYPE html>
+<html lang="ko"><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>Connect AI</title>
+<style>
+*{margin:0;padding:0;box-sizing:border-box}
+:root{
+  --bg:#0a0a0c;--bg2:#111114;--surface:rgba(22,22,28,.75);--surface2:rgba(38,38,46,.6);
+  --border:rgba(255,255,255,.06);--border2:rgba(255,255,255,.1);
+  --text:#b0b0be;--text-bright:#f0f0f5;--text-dim:#55556a;
+  --accent:#7c6aff;--accent2:#e040fb;--accent3:#00e5ff;
+  --accent-glow:rgba(124,106,255,.2);--accent2-glow:rgba(224,64,251,.15);
+  --input-bg:rgba(14,14,18,.9);--code-bg:#08080c;
+  --green:#00e676;--yellow:#ffab40;--cyan:#00e5ff;--red:#ff5252;
+}
+html,body{height:100%;font-family:'SF Pro Display',-apple-system,BlinkMacSystemFont,'Segoe UI',system-ui,sans-serif;font-size:13px;background:var(--bg);color:var(--text);display:flex;flex-direction:column;overflow:hidden}
+
+/* AURORA BACKGROUND */
+body::before{content:'';position:fixed;top:-50%;left:-50%;width:200%;height:200%;background:radial-gradient(ellipse at 20% 50%,rgba(124,106,255,.06) 0%,transparent 50%),radial-gradient(ellipse at 80% 20%,rgba(224,64,251,.04) 0%,transparent 50%),radial-gradient(ellipse at 50% 80%,rgba(0,229,255,.03) 0%,transparent 50%);animation:aurora 20s ease-in-out infinite;z-index:0;pointer-events:none}
+@keyframes aurora{0%,100%{transform:translate(0,0) rotate(0deg)}33%{transform:translate(2%,-1%) rotate(.5deg)}66%{transform:translate(-1%,2%) rotate(-.5deg)}}
+
+/* HEADER */
+.header{display:flex;align-items:center;justify-content:space-between;padding:10px 14px;background:rgba(10,10,12,.8);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);border-bottom:1px solid var(--border);flex-shrink:0;position:relative;z-index:10}
+.header::after{content:'';position:absolute;bottom:0;left:0;right:0;height:1px;background:linear-gradient(90deg,transparent 5%,var(--accent) 30%,var(--accent2) 50%,var(--accent3) 70%,transparent 95%);opacity:.5;animation:headerGlow 4s ease-in-out infinite alternate}
+@keyframes headerGlow{0%{opacity:.3}100%{opacity:.6}}
+.thinking-bar{height:2px;background:transparent;position:relative;overflow:hidden;flex-shrink:0;z-index:10}
+.thinking-bar.active{background:rgba(124,106,255,.1)}
+.thinking-bar.active::after{content:'';position:absolute;top:0;left:-40%;width:40%;height:100%;background:linear-gradient(90deg,transparent,var(--accent),var(--accent2),var(--accent3),transparent);animation:thinkSlide 1.5s ease-in-out infinite}
+@keyframes thinkSlide{0%{left:-40%}100%{left:100%}}
+.header-left{display:flex;align-items:center;gap:8px}
+.logo{width:26px;height:26px;border-radius:8px;background:linear-gradient(135deg,var(--accent),var(--accent2));display:flex;align-items:center;justify-content:center;font-size:14px;color:#fff;box-shadow:0 0 15px rgba(124,106,255,.4),0 0 30px rgba(224,64,251,.15);animation:logoPulse 3s ease-in-out infinite;position:relative}
+.logo::after{content:'';position:absolute;inset:-2px;border-radius:10px;background:linear-gradient(135deg,var(--accent),var(--accent2),var(--accent3));opacity:.3;filter:blur(4px);animation:logoPulse 3s ease-in-out infinite}
+@keyframes logoPulse{0%,100%{box-shadow:0 0 15px rgba(124,106,255,.4),0 0 30px rgba(224,64,251,.15)}50%{box-shadow:0 0 20px rgba(124,106,255,.6),0 0 40px rgba(224,64,251,.25)}}
+.brand{font-weight:800;font-size:14px;color:var(--text-bright);letter-spacing:-.5px;background:linear-gradient(135deg,#fff 40%,var(--accent) 100%);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.header-right{display:flex;align-items:center;gap:5px}
+select{background:rgba(22,22,28,.9);color:var(--text-bright);border:1px solid var(--border2);padding:5px 8px;border-radius:8px;font-size:10px;font-family:inherit;cursor:pointer;outline:none;max-width:120px;transition:all .3s;backdrop-filter:blur(8px)}
+select:hover,select:focus{border-color:var(--accent);box-shadow:0 0 12px var(--accent-glow)}
+.btn-icon{background:rgba(22,22,28,.7);border:1px solid var(--border2);color:var(--text-dim);width:28px;height:28px;border-radius:8px;font-size:13px;cursor:pointer;display:flex;align-items:center;justify-content:center;transition:all .3s;backdrop-filter:blur(8px);position:relative;overflow:hidden}
+.btn-icon::before{content:'';position:absolute;inset:0;background:linear-gradient(135deg,var(--accent-glow),var(--accent2-glow));opacity:0;transition:opacity .3s}
+.btn-icon:hover{color:var(--text-bright);border-color:var(--accent);transform:translateY(-1px);box-shadow:0 4px 15px var(--accent-glow)}
+.btn-icon:hover::before{opacity:1}
+
+/* CHAT */
+.chat{flex:1;overflow-y:auto;padding:16px 14px;display:flex;flex-direction:column;gap:16px;position:relative;z-index:1}
+.chat::-webkit-scrollbar{width:2px}.chat::-webkit-scrollbar-track{background:transparent}.chat::-webkit-scrollbar-thumb{background:var(--accent);border-radius:2px;opacity:.5}
+
+/* MESSAGES */
+.msg{display:flex;flex-direction:column;gap:5px;animation:msgIn .5s cubic-bezier(.16,1,.3,1)}
+.msg-head{display:flex;align-items:center;gap:7px;font-weight:600;font-size:11px;color:var(--text)}
+.msg-time{font-weight:400;font-size:9px;color:var(--text-dim);margin-left:auto;opacity:.6}
+.av{width:22px;height:22px;border-radius:7px;display:flex;align-items:center;justify-content:center;font-size:11px;flex-shrink:0}
+.av-user{background:var(--surface2);color:var(--text);border:1px solid var(--border2)}
+.av-ai{background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;box-shadow:0 0 10px rgba(124,106,255,.3)}
+.msg-body{padding-left:29px;line-height:1.75;color:var(--text);white-space:pre-wrap;word-break:break-word;font-size:13px}
+.msg-user .msg-body{background:var(--surface);border:1px solid var(--border2);border-radius:14px;padding:10px 14px;margin-left:29px;color:var(--text-bright);backdrop-filter:blur(8px)}
+.msg-body pre{background:var(--code-bg);border:1px solid var(--border2);border-radius:10px;padding:14px 16px;overflow-x:auto;margin:8px 0;font-size:12px;line-height:1.6;color:#c9d1d9;position:relative}
+.msg-body pre::-webkit-scrollbar{height:6px}
+.msg-body pre::-webkit-scrollbar-track{background:rgba(0,0,0,.2);border-radius:4px}
+.msg-body pre::-webkit-scrollbar-thumb{background:rgba(124,106,255,.3);border-radius:4px}
+.msg-body pre::-webkit-scrollbar-thumb:hover{background:rgba(124,106,255,.6)}
+.msg-body code{font-family:'SF Mono','JetBrains Mono','Fira Code','Menlo',monospace;font-size:11.5px}
+.msg-body :not(pre)>code{background:rgba(124,106,255,.1);color:var(--accent);padding:2px 7px;border-radius:5px;border:1px solid rgba(124,106,255,.15)}
+.msg-body a{color:var(--accent);text-decoration:none}
+.msg-body a:hover{text-decoration:underline}
+.code-wrap{position:relative}
+.code-lang{position:absolute;top:0;left:14px;background:linear-gradient(135deg,var(--accent),var(--accent2));color:#fff;padding:2px 10px;border-radius:0 0 6px 6px;font-size:9px;font-family:'SF Mono',monospace;text-transform:uppercase;letter-spacing:.5px;font-weight:600}
+.copy-btn{position:absolute;top:8px;right:8px;background:var(--surface2);border:1px solid var(--border2);color:var(--text-dim);padding:4px 12px;border-radius:6px;font-size:10px;cursor:pointer;opacity:0;transition:all .3s;font-family:inherit;z-index:1;backdrop-filter:blur(8px)}
+.code-wrap:hover .copy-btn{opacity:1}.copy-btn:hover{background:var(--accent);color:#fff;border-color:var(--accent);box-shadow:0 0 12px var(--accent-glow)}
+.copy-btn.copied{background:var(--green);color:#fff;border-color:var(--green);opacity:1}
+
+/* BADGES */
+.file-badge{background:rgba(255,171,64,.05);border:1px solid rgba(255,171,64,.2);border-radius:10px 10px 0 0;border-bottom:none;padding:8px 14px;font-size:11px;font-weight:700;color:var(--yellow);display:flex;align-items:center;gap:6px;backdrop-filter:blur(8px)}
+.edit-badge{background:rgba(0,229,255,.05);border:1px solid rgba(0,229,255,.2);border-radius:10px 10px 0 0;border-bottom:none;padding:8px 14px;font-size:11px;font-weight:700;color:var(--cyan);display:flex;align-items:center;gap:6px;backdrop-filter:blur(8px)}
+.cmd-badge{background:rgba(124,106,255,.05);border:1px solid rgba(124,106,255,.25);border-radius:10px;padding:10px 14px;margin:8px 0;font-size:12px;color:var(--accent);font-family:'SF Mono','Menlo',monospace;display:flex;align-items:center;gap:8px;backdrop-filter:blur(8px)}
+.msg-error .msg-body{color:var(--red);text-shadow:0 0 20px rgba(255,82,82,.2)}
+
+/* WELCOME */
+.welcome{text-align:center;padding:0 20px 20px;position:relative}
+.welcome-logo{width:56px;height:56px;border-radius:16px;margin:0 auto 16px;background:linear-gradient(135deg,var(--accent),var(--accent2),var(--accent3));display:flex;align-items:center;justify-content:center;font-size:28px;color:#fff;box-shadow:0 0 40px rgba(124,106,255,.35),0 0 80px rgba(224,64,251,.15);animation:welcomeFloat 4s ease-in-out infinite;position:relative}
+.welcome-logo::before{content:'';position:absolute;inset:-4px;border-radius:20px;background:conic-gradient(from 0deg,var(--accent),var(--accent2),var(--accent3),var(--accent));opacity:.2;filter:blur(8px);animation:spin 8s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
+@keyframes welcomeFloat{0%,100%{transform:translateY(0) scale(1)}50%{transform:translateY(-6px) scale(1.03)}}
+.welcome-title{font-size:22px;font-weight:900;letter-spacing:-1px;background:linear-gradient(135deg,#fff,var(--accent),var(--accent2));background-size:200% 200%;-webkit-background-clip:text;-webkit-text-fill-color:transparent;animation:gradText 5s ease infinite;margin-bottom:8px}
+@keyframes gradText{0%,100%{background-position:0% 50%}50%{background-position:100% 50%}}
+.welcome-sub{color:var(--text-dim);font-size:12px;line-height:1.7;margin-bottom:18px;letter-spacing:-.2px}
+
+/* LOADING */
+.loading-wrap{padding-left:29px;padding-top:6px;display:flex;align-items:center;gap:10px}
+.loading-dots{display:flex;gap:4px}
+.loading-dots span{width:6px;height:6px;border-radius:50%;background:var(--accent);animation:dotBounce 1.4s ease-in-out infinite}
+.loading-dots span:nth-child(2){animation-delay:.2s;background:var(--accent2)}
+.loading-dots span:nth-child(3){animation-delay:.4s;background:var(--accent3)}
+@keyframes dotBounce{0%,80%,100%{transform:scale(.6);opacity:.4}40%{transform:scale(1.2);opacity:1}}
+.loading-text{font-size:11px;color:var(--text-dim);animation:pulse 2s ease-in-out infinite;letter-spacing:.3px}
+
+/* INPUT */
+.input-wrap{padding:8px 14px 14px;flex-shrink:0;position:relative;z-index:1}
+.input-box{background:var(--input-bg);border:1px solid var(--border2);border-radius:14px;padding:12px 14px;display:flex;flex-direction:column;gap:8px;transition:all .3s;position:relative;backdrop-filter:blur(12px)}
+.input-box:focus-within{border-color:rgba(124,106,255,.4);box-shadow:0 0 24px rgba(124,106,255,.12);animation:focusPulse 3s infinite}
+@keyframes focusPulse{0%,100%{box-shadow:0 0 20px rgba(124,106,255,.08)}50%{box-shadow:0 0 28px rgba(124,106,255,.18)}}
+textarea{width:100%;background:transparent;border:none;color:var(--text-bright);font-family:inherit;font-size:13px;line-height:1.5;resize:none;outline:none;min-height:22px;max-height:150px}
+textarea::placeholder{color:var(--text-dim)}
+.input-footer{display:flex;align-items:center;justify-content:space-between}
+.input-hint{font-size:10px;color:var(--text-dim);opacity:.5}
+.input-btns{display:flex;gap:5px}
+.send-btn{background:linear-gradient(135deg,var(--accent),var(--accent2));border:none;color:#fff;width:32px;height:32px;border-radius:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:14px;transition:all .2s;box-shadow:0 2px 12px rgba(124,106,255,.35);position:relative;overflow:hidden}
+.send-btn::after{content:'';position:absolute;inset:0;background:linear-gradient(135deg,transparent,rgba(255,255,255,.15));opacity:0;transition:opacity .3s}
+.send-btn:hover{transform:translateY(-2px) scale(1.05);box-shadow:0 6px 24px rgba(124,106,255,.45)}
+.send-btn:hover::after{opacity:1}
+.send-btn:active{transform:scale(.92)}.send-btn:disabled{opacity:.2;cursor:not-allowed;transform:none;box-shadow:none}
+.stop-btn{background:var(--red);border:none;color:#fff;width:32px;height:32px;border-radius:10px;cursor:pointer;display:none;align-items:center;justify-content:center;font-size:11px;box-shadow:0 0 12px rgba(255,82,82,.3)}
+.stop-btn.visible{display:flex}
+@keyframes msgIn{from{opacity:0;transform:translateY(12px) scale(.97)}to{opacity:1;transform:translateY(0) scale(1)}}
+@keyframes pulse{0%,100%{opacity:.4}50%{opacity:1}}
+.stream-active{position:relative}
+.stream-active::after{content:'';display:inline-block;width:2px;height:14px;background:var(--accent);margin-left:2px;animation:blink .6s step-end infinite;vertical-align:text-bottom;border-radius:1px;box-shadow:0 0 6px var(--accent)}
+@keyframes blink{0%,100%{opacity:1}50%{opacity:0}}
+.stream-active .code-wrap:last-child {
+  border: 1px solid var(--accent);
+  animation: codePulse 2s infinite;
+}
+.stream-active .code-wrap:last-child pre {
+  box-shadow: inset 0 0 20px rgba(124,106,255,0.05);
+}
+@keyframes codePulse {
+  0%, 100% { box-shadow: 0 0 15px var(--accent-glow); }
+  50% { box-shadow: 0 0 35px var(--accent2-glow); border-color: var(--accent2); }
+}
+.main-view{flex:1;display:flex;flex-direction:column;overflow:hidden;transition:all .5s cubic-bezier(.16,1,.3,1)}
+body.init .main-view{justify-content:center;margin-top:-6vh}
+body.init .chat{flex:0 0 auto;overflow:visible;padding-bottom:15px}
+body.init .input-wrap{max-width:680px;width:100%;margin:0 auto;transform:none;transition:all .5s cubic-bezier(.16,1,.3,1)}
+
+/* ATTACHMENT */
+.attach-btn{background:transparent;border:1px solid var(--border2);color:var(--text-dim);width:32px;height:32px;border-radius:10px;cursor:pointer;display:flex;align-items:center;justify-content:center;font-size:16px;transition:all .3s;flex-shrink:0}
+.attach-btn:hover{color:var(--accent);border-color:var(--accent);box-shadow:0 0 12px var(--accent-glow);transform:translateY(-1px)}
+.attach-preview{display:none;gap:6px;padding:0 0 6px;flex-wrap:wrap}
+.attach-preview.visible{display:flex}
+.attach-chip{display:flex;align-items:center;gap:5px;background:var(--surface2);border:1px solid var(--border2);border-radius:8px;padding:4px 10px;font-size:10px;color:var(--text);animation:msgIn .3s ease}
+.attach-chip .chip-icon{font-size:12px}
+.attach-chip .chip-name{max-width:100px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.attach-chip .chip-remove{cursor:pointer;color:var(--text-dim);font-size:12px;margin-left:2px;transition:color .2s}
+.attach-chip .chip-remove:hover{color:var(--red)}
+.attach-thumb{width:28px;height:28px;border-radius:5px;object-fit:cover;border:1px solid var(--border2)}
+
+/* REGENERATE BUTTON */
+.regen-btn{display:inline-flex;align-items:center;gap:4px;background:transparent;border:1px solid var(--border2);color:var(--text-dim);padding:4px 12px;border-radius:8px;font-size:10px;cursor:pointer;transition:all .3s;font-family:inherit;margin-top:6px;margin-left:29px}
+.regen-btn:hover{color:var(--accent);border-color:var(--accent);box-shadow:0 0 12px var(--accent-glow)}
+
+/* SYNTAX HIGHLIGHTING */
+.msg-body pre .kw{color:#c792ea}
+.msg-body pre .str{color:#c3e88d}
+.msg-body pre .num{color:#f78c6c}
+.msg-body pre .cm{color:#546e7a;font-style:italic}
+.msg-body pre .fn{color:#82aaff}
+.msg-body pre .tag{color:#f07178}
+.msg-body pre .attr{color:#ffcb6b}
+.msg-body pre .op{color:#89ddff}
+.msg-body pre .type{color:#ffcb6b}
+</style></head><body class="init">
+<div class="header"><div class="header-left"><div class="logo">\u2726</div><span class="brand">Connect AI</span></div><div class="header-right"><select id="modelSel"></select><button class="btn-icon" id="brainBtn" title="Second Brain">\ud83e\udde0</button><button class="btn-icon" id="settingsBtn" title="Settings">\u2699\ufe0f</button><button class="btn-icon" id="newChatBtn" title="New Chat">+</button></div></div>
+<div class="thinking-bar" id="thinkingBar"></div>
+<div class="main-view" id="mainView">
+<div class="chat" id="chat">
+<div class="welcome">
+<div class="welcome-logo">\u2726</div>
+<div class="welcome-title">Connect AI</div>
+<div class="welcome-sub">\ubcf4\uc548 \u00b7 \ube44\uc6a9\ucd5c\uc801\ud654 \u00b7 \uc9c0\uc2dd\uc5f0\uacb0<br>\ud504\ub85c\uc81d\ud2b8\ub97c \uc774\ud574\ud558\uace0, \ucf54\ub4dc\ub97c \uc791\uc131\ud558\uace0, \uc2e4\ud589\ud569\ub2c8\ub2e4.</div>
+</div></div>
+<div class="input-wrap"><div class="input-box">
+<div class="attach-preview" id="attachPreview"></div>
+<textarea id="input" rows="1" placeholder="\ubb34\uc5c7\uc744 \ub9cc\ub4e4\uc5b4 \ub4dc\ub9b4\uae4c\uc694?"></textarea>
+<div class="input-footer"><span class="input-hint">Enter \uc804\uc1a1 \u00b7 Shift+Enter \uc904\ubc14\uafc8</span>
+<div class="input-btns"><button class="attach-btn" id="attachBtn" title="\ud30c\uc77c \ucca8\ubd80">+</button><button class="stop-btn" id="stopBtn">\u25a0</button><button class="send-btn" id="sendBtn">\u2191</button></div></div></div>
+<input type="file" id="fileInput" multiple accept="image/*,audio/*,.txt,.md,.csv,.json,.js,.ts,.html,.css,.py,.java,.rs,.go,.yaml,.yml,.xml,.toml" hidden></div>
+</div>
+<script>
+window.onerror = function(msg, url, line, col, error) {
+  document.body.innerHTML += '<div style="position:absolute;z-index:9999;background:red;color:white;padding:10px;top:0;left:0;right:0">ERROR: ' + msg + ' at line ' + line + '</div>';
+};
+window.addEventListener('unhandledrejection', function(event) {
+  document.body.innerHTML += '<div style="position:absolute;z-index:9999;background:red;color:white;padding:10px;bottom:0;left:0;right:0">PROMISE REJECTION: ' + event.reason + '</div>';
+});
+try {
+const vscode=acquireVsCodeApi(),chat=document.getElementById('chat'),input=document.getElementById('input'),
+sendBtn=document.getElementById('sendBtn'),stopBtn=document.getElementById('stopBtn'),
+modelSel=document.getElementById('modelSel'),newChatBtn=document.getElementById('newChatBtn'),settingsBtn=document.getElementById('settingsBtn'),brainBtn=document.getElementById('brainBtn'),
+attachBtn=document.getElementById('attachBtn'),fileInput=document.getElementById('fileInput'),attachPreview=document.getElementById('attachPreview'),
+thinkingBar=document.getElementById('thinkingBar');
+let loader=null,sending=false,pendingFiles=[];
+
+/* Syntax Highlighting (lightweight) */
+function highlight(code,lang){
+  let h=esc(code);
+  h=h.replace(/(\\\\/\\\\/[^\\\\n]*)/g,'<span class=\"cm\">$1</span>');
+  h=h.replace(/(#[^\\\\n]*)/g,'<span class=\"cm\">$1</span>');
+  h=h.replace(/(\\\\/\\\\*[\\\\s\\\\S]*?\\\\*\\\\/)/g,'<span class=\"cm\">$1</span>');
+  h=h.replace(/(&quot;[^&]*?&quot;|&#x27;[^&]*?&#x27;)/g,'<span class=\"str\">$1</span>');
+  h=h.replace(/\\\\b(function|const|let|var|return|if|else|for|while|class|import|export|from|default|async|await|try|catch|throw|new|this|def|self|print|lambda|yield|with|as|raise|except|finally)\\\\b/g,'<span class=\"kw\">$1</span>');
+  h=h.replace(/\\\\b(\\\\d+\\\\.?\\\\d*)\\\\b/g,'<span class=\"num\">$1</span>');
+  h=h.replace(/\\\\b(True|False|None|true|false|null|undefined|NaN)\\\\b/g,'<span class=\"num\">$1</span>');
+  h=h.replace(/\\\\b(String|Number|Boolean|Array|Object|Map|Set|Promise|void|int|float|str|list|dict|tuple)\\\\b/g,'<span class=\"type\">$1</span>');
+  h=h.replace(/([=!&lt;&gt;+\\\\-*/%|&amp;^~?:]+)/g,'<span class=\"op\">$1</span>');
+  return h;
+}
+
+/* Clipboard Paste (Ctrl+V images) */
+input.addEventListener('paste',(e)=>{
+  const items=e.clipboardData&&e.clipboardData.items;
+  if(!items)return;
+  for(const item of items){
+    if(item.type.startsWith('image/')){
+      e.preventDefault();
+      const file=item.getAsFile();
+      if(!file)return;
+      const reader=new FileReader();
+      reader.onload=()=>{
+        const base64=reader.result.split(',')[1];
+        pendingFiles.push({name:'clipboard-image.png',type:file.type,data:base64});
+        renderPreview();
+      };
+      reader.readAsDataURL(file);
+      return;
+    }
+  }
+});
+vscode.postMessage({type:'getModels'});
+setTimeout(()=>vscode.postMessage({type:'ready'}),300);
+input.addEventListener('input',()=>{input.style.height='auto';input.style.height=Math.min(input.scrollHeight,150)+'px'});
+function getTime(){return new Date().toLocaleTimeString('ko-KR',{hour:'2-digit',minute:'2-digit'})}
+function esc(s){const d=document.createElement('div');d.innerText=s;return d.innerHTML}
+function fmt(t){
+  if(t.lastIndexOf('<create_file') > t.lastIndexOf('</create_file>')) t += '</create_file>';
+  if(t.lastIndexOf('<edit_file') > t.lastIndexOf('</edit_file>')) t += '</edit_file>';
+  if(t.lastIndexOf('<run_command') > t.lastIndexOf('</run_command>')) t += '</run_command>';
+  if((t.match(/\x60\x60\x60/g)||[]).length % 2 !== 0) t += '\\n\x60\x60\x60';
+
+  const blocks = [];
+  function pushB(h){ blocks.push(h); return '__B' + (blocks.length-1) + '__'; }
+  t=t.replace(/<create_file\\s+path="([^"]+)">([\\s\\S]*?)<\\/create_file>/g,(_,p,c)=>pushB('<div class="file-badge">\ud83d\udcc1 '+esc(p)+' \u2014 \uc790\ub3d9 \uc0dd\uc131\ub428</div><div class="code-wrap"><pre><code>'+esc(c)+'</code></pre><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>'));
+  t=t.replace(/<edit_file\\s+path="([^"]+)">([\\s\\S]*?)<\\/edit_file>/g,(_,p,c)=>pushB('<div class="edit-badge">\u270f\ufe0f '+esc(p)+' \u2014 \ud3b8\uc9d1\ub428</div><div class="code-wrap"><pre><code>'+esc(c)+'</code></pre><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>'));
+  t=t.replace(/<run_command>([\\s\\S]*?)<\\/run_command>/g,(_,c)=>pushB('<div class="cmd-badge">\u25b6 '+esc(c)+'</div>'));
+  t=t.replace(/\x60\x60\x60(\\w*)\\n([\\s\\S]*?)\x60\x60\x60/g,(_,lang,c)=>{const l=lang||'code';return pushB('<div class="code-wrap"><span class="code-lang">'+esc(l)+'</span><pre><code>'+highlight(c,l)+'</code></pre><button class="copy-btn" onclick="copyCode(this)">Copy</button></div>');});
+  t=t.replace(/\x60([^\x60]+)\x60/g,(_,c)=>pushB('<code>'+esc(c)+'</code>'));
+  t=esc(t);
+  t=t.replace(/\\*\\*([^*]+)\\*\\*/g,'<strong>$1</strong>');
+  t=t.replace(/\\[([^\\]]+)\\]\\(([^)]+)\\)/g, '<a href="$2" target="_blank">$1</a>');
+  t=t.replace(/__B(\\d+)__/g, (_,i)=>blocks[i]);
+  return t;
+}
+function copyCode(btn){const code=btn.parentElement.querySelector('code');if(!code)return;navigator.clipboard.writeText(code.innerText).then(()=>{btn.textContent='\u2713 Copied';btn.classList.add('copied');setTimeout(()=>{btn.textContent='Copy';btn.classList.remove('copied')},1500)})}
+function addMsg(text,role){
+  const isUser=role==='user',isErr=role==='error';
+  const el=document.createElement('div');el.className='msg'+(isUser?' msg-user':'')+(isErr?' msg-error':'');
+  const head=document.createElement('div');head.className='msg-head';
+  head.innerHTML=(isUser?'<div class="av av-user">\ud83d\udc64</div><span>You</span>':'<div class="av av-ai">\u2726</div><span>Connect AI</span>')+'<span class="msg-time">'+getTime()+'</span>';
+  const body=document.createElement('div');body.className='msg-body';
+  if(isUser){body.innerText=text}else{body.innerHTML=fmt(text)}
+  el.appendChild(head);el.appendChild(body);chat.appendChild(el);chat.scrollTop=chat.scrollHeight;
+}
+function showLoader(){loader=document.createElement('div');loader.className='msg';loader.innerHTML='<div class="msg-head"><div class="av av-ai">\u2726</div><span>Connect AI</span><span class="msg-time">'+getTime()+'</span></div><div class="loading-wrap"><div class="loading-dots"><span></span><span></span><span></span></div><span class="loading-text">\uc0dd\uac01\ud558\ub294 \uc911...</span></div>';chat.appendChild(loader);chat.scrollTop=chat.scrollHeight;thinkingBar.classList.add('active')}
+function hideLoader(){if(loader&&loader.parentNode)loader.parentNode.removeChild(loader);loader=null;thinkingBar.classList.remove('active')}
+function setSending(v){sending=v;sendBtn.disabled=v;stopBtn.classList.toggle('visible',v);input.disabled=v;if(!v){input.focus();thinkingBar.classList.remove('active')}}
+function send(){
+  const text=input.value.trim();
+  if((!text&&pendingFiles.length===0)||sending)return;
+  document.body.classList.remove('init');
+  const w=document.querySelector('.welcome');if(w)w.remove();
+  document.querySelectorAll('.quick-actions').forEach(e=>e.remove());
+  const displayText=text+(pendingFiles.length>0?'\n\ud83d\udcce '+pendingFiles.map(f=>f.name).join(', '):'');
+  addMsg(displayText,'user');
+  input.value='';input.style.height='auto';setSending(true);showLoader();
+  if(pendingFiles.length>0){
+    vscode.postMessage({type:'promptWithFile',value:text||'\uc774 \ud30c\uc77c\uc744 \ubd84\uc11d\ud574\uc8fc\uc138\uc694.',model:modelSel.value,files:pendingFiles});
+    pendingFiles=[];attachPreview.innerHTML='';attachPreview.classList.remove('visible');
+  } else {
+    vscode.postMessage({type:'prompt',value:text,model:modelSel.value});
+  }
+}
+
+/* Attachment Logic */
+attachBtn.addEventListener('click',()=>fileInput.click());
+fileInput.addEventListener('change',()=>{
+  const files=Array.from(fileInput.files);
+  files.forEach(file=>{
+    const reader=new FileReader();
+    reader.onload=()=>{
+      const base64=reader.result.split(',')[1];
+      pendingFiles.push({name:file.name,type:file.type,data:base64});
+      renderPreview();
+    };
+    reader.readAsDataURL(file);
+  });
+  fileInput.value='';
+});
+function renderPreview(){
+  attachPreview.innerHTML='';
+  if(pendingFiles.length===0){attachPreview.classList.remove('visible');return;}
+  attachPreview.classList.add('visible');
+  pendingFiles.forEach((f,i)=>{
+    const chip=document.createElement('div');chip.className='attach-chip';
+    const isImg=f.type.startsWith('image/');
+    if(isImg){
+      const thumb=document.createElement('img');thumb.className='attach-thumb';thumb.src='data:'+f.type+';base64,'+f.data;chip.appendChild(thumb);
+    } else {
+      const icon=document.createElement('span');icon.className='chip-icon';icon.textContent=f.type.startsWith('audio/')?'\ud83c\udfa7':'\ud83d\udcc4';chip.appendChild(icon);
+    }
+    const nm=document.createElement('span');nm.className='chip-name';nm.textContent=f.name;chip.appendChild(nm);
+    const rm=document.createElement('span');rm.className='chip-remove';rm.textContent='\u2715';
+    rm.addEventListener('click',()=>{pendingFiles.splice(i,1);renderPreview();});
+    chip.appendChild(rm);
+    attachPreview.appendChild(chip);
+  });
+}
+document.addEventListener('click',e=>{if(e.target.classList.contains('qa-btn')){const p=e.target.getAttribute('data-prompt');if(p){input.value=p;send()}}});
+sendBtn.addEventListener('click',send);
+input.addEventListener('keydown',e=>{if(e.key==='Enter'&&!e.shiftKey){e.preventDefault();send()}});
+newChatBtn.addEventListener('click',()=>vscode.postMessage({type:'newChat'}));
+settingsBtn.addEventListener('click',()=>vscode.postMessage({type:'openSettings'}));
+brainBtn.addEventListener('click',()=>vscode.postMessage({type:'syncBrain'}));
+stopBtn.addEventListener('click',()=>{vscode.postMessage({type:'stopGeneration'});hideLoader();setSending(false);if(streamBody){streamBody.classList.remove('stream-active')}streamEl=null;streamBody=null;});
+let streamEl=null,streamBody=null;
+window.addEventListener('message',e=>{const msg=e.data;switch(msg.type){
+  case 'response':hideLoader();setSending(false);addMsg(msg.value,'ai');break;
+  case 'error':hideLoader();setSending(false);addMsg(msg.value,'error');break;
+  case 'streamStart':{
+    hideLoader();
+    streamEl=document.createElement('div');streamEl.className='msg';
+    const h=document.createElement('div');h.className='msg-head';
+    h.innerHTML='<div class="av av-ai">\u2726</div><span>Connect AI</span><span class="msg-time">'+getTime()+'</span>';
+    streamBody=document.createElement('div');streamBody.className='msg-body stream-active';
+    streamEl.appendChild(h);streamEl.appendChild(streamBody);chat.appendChild(streamEl);chat.scrollTop=chat.scrollHeight;
+    break;}
+  case 'streamChunk':{
+    if(streamBody){streamBody.innerHTML=fmt(streamBody._raw=(streamBody._raw||'')+msg.value);chat.scrollTop=chat.scrollHeight;}
+    break;}
+  case 'streamEnd':{
+    if(streamBody)streamBody.classList.remove('stream-active');
+    /* Add regenerate button */
+    if(streamEl){
+      const rb=document.createElement('button');rb.className='regen-btn';rb.innerHTML='\ud83d\udd04 Regenerate';
+      rb.addEventListener('click',()=>{rb.remove();vscode.postMessage({type:'regenerate'});showLoader();setSending(true);});
+      streamEl.appendChild(rb);
+    }
+    setSending(false);streamEl=null;streamBody=null;
+    break;}
+  case 'modelsList':modelSel.innerHTML='';msg.value.forEach(m=>{const o=document.createElement('option');o.value=m;o.textContent=m;modelSel.appendChild(o)});break;
+  case 'clearChat':
+    document.body.classList.add('init');
+    chat.innerHTML='<div class="welcome"><div class="welcome-logo">\u2726</div><div class="welcome-title">Connect AI</div><div class="welcome-sub">\ubcf4\uc548 \u00b7 \ube44\uc6a9\ucd5c\uc801\ud654 \u00b7 \uc9c0\uc2dd\uc5f0\uacb0<br>\ud504\ub85c\uc81d\ud2b8\ub97c \uc774\ud574\ud558\uace0, \ucf54\ub4dc\ub97c \uc791\uc131\ud558\uace0, \uc2e4\ud589\ud569\ub2c8\ub2e4.</div></div>';
+    break;
+  case 'restoreMessages':
+    chat.innerHTML='';
+    if(msg.value&&msg.value.length>0){
+      document.body.classList.remove('init');
+      msg.value.forEach(m=>addMsg(m.text,m.role));
+    } else {
+      document.body.classList.add('init');
+      chat.innerHTML='<div class="welcome"><div class="welcome-logo">\u2726</div><div class="welcome-title">Connect AI</div><div class="welcome-sub">\ubcf4\uc548 \u00b7 \ube44\uc6a9\ucd5c\uc801\ud654 \u00b7 \uc9c0\uc2dd\uc5f0\uacb0<br>\ud504\ub85c\uc81d\ud2b8\ub97c \uc774\ud574\ud558\uace0, \ucf54\ub4dc\ub97c \uc791\uc131\ud558\uace0, \uc2e4\ud589\ud569\ub2c8\ub2e4.</div></div>';
+    }
+    break;
+  case 'focusInput':input.focus();break;
+  case 'injectPrompt':input.value=msg.value;input.style.height='auto';input.style.height=Math.min(input.scrollHeight,150)+'px';send();break;
+} });
+} catch(err) {
+  document.body.innerHTML = '<div style="color:#ff4444;padding:20px;background:#111;height:100%;font-size:14px;overflow:auto;"><h2>\u26a0\ufe0f WEBVIEW JS CRASH</h2><pre>' + err.name + ': ' + err.message + '\\n' + err.stack + '</pre></div>';
+}
+</script></body></html>`;
+    }
+}

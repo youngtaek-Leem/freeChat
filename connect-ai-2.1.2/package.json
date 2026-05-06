@@ -1,0 +1,136 @@
+{
+  "name": "connect-ai-lab",
+  "displayName": "Connect AI",
+  "description": "100% 로컬 AI 코딩 에이전트 — 파일 생성, 코드 편집, 터미널 실행을 오프라인으로. Ollama + Gemma/Llama/DeepSeek 지원.",
+  "version": "2.1.2",
+  "publisher": "connectailab",
+  "license": "MIT",
+  "icon": "assets/icon.png",
+  "engines": {
+    "vscode": "^1.80.0"
+  },
+  "categories": [
+    "Machine Learning",
+    "Programming Languages",
+    "Chat"
+  ],
+  "keywords": [
+    "ai",
+    "local",
+    "ollama",
+    "gemma",
+    "llama",
+    "deepseek",
+    "offline",
+    "agent",
+    "code-generation",
+    "connect-ai-lab",
+    "copilot"
+  ],
+  "activationEvents": [
+    "*"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "connect-ai-lab.newChat",
+        "title": "Connect AI: New Chat",
+        "icon": "$(add)"
+      },
+      {
+        "command": "connect-ai-lab.exportChat",
+        "title": "Connect AI: Export Chat as Markdown"
+      },
+      {
+        "command": "connect-ai-lab.explainSelection",
+        "title": "Connect AI: Explain Selected Code"
+      },
+      {
+        "command": "connect-ai-lab.focusChat",
+        "title": "Connect AI: Focus Chat Input"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "connect-ai-lab.focusChat",
+        "key": "cmd+l",
+        "mac": "cmd+l"
+      }
+    ],
+    "menus": {
+      "editor/context": [
+        {
+          "command": "connect-ai-lab.explainSelection",
+          "when": "editorHasSelection",
+          "group": "1_modification"
+        }
+      ]
+    },
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "connect-ai-lab-sidebar",
+          "title": "Connect AI",
+          "icon": "$(hubot)"
+        }
+      ]
+    },
+    "views": {
+      "connect-ai-lab-sidebar": [
+        {
+          "type": "webview",
+          "id": "connect-ai-lab-v2-view",
+          "name": "Chat"
+        }
+      ]
+    },
+    "configuration": {
+      "title": "Connect AI",
+      "properties": {
+        "connectAiLab.ollamaUrl": {
+          "type": "string",
+          "default": "http://127.0.0.1:11434",
+          "description": "Ollama 서버 URL (기본값: http://127.0.0.1:11434)"
+        },
+        "connectAiLab.defaultModel": {
+          "type": "string",
+          "default": "gemma4:e2b",
+          "description": "기본 AI 모델 이름 (예: gemma4:e2b, llama3.3, deepseek-r1)"
+        },
+        "connectAiLab.maxContextFiles": {
+          "type": "number",
+          "default": 200,
+          "description": "프로젝트 컨텍스트에 포함할 최대 파일 수"
+        },
+        "connectAiLab.requestTimeout": {
+          "type": "number",
+          "default": 300,
+          "description": "AI 응답 대기 시간 (초, 기본값: 300초)"
+        },
+        "connectAiLab.secondBrainRepo": {
+          "type": "string",
+          "default": "",
+          "description": "🧠 Second Brain — 지식 저장소 GitHub URL (예: https://github.com/user/my-knowledge). 여기에 입력한 깃허브의 마크다운(.md) 파일들이 AI의 지식 기반이 됩니다."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run compile",
+    "compile": "esbuild src/extension.ts --bundle --platform=node --external:vscode --outfile=out/extension.js",
+    "watch": "tsc -watch -p ./",
+    "pretest": "npm run compile"
+  },
+  "devDependencies": {
+    "@types/node": "18.x",
+    "@types/vscode": "^1.80.0",
+    "@vercel/ncc": "^0.38.4",
+    "esbuild": "^0.28.0",
+    "typescript": "^5.1.3"
+  },
+  "dependencies": {
+    "axios": "^1.15.0",
+    "jsdom": "^29.0.2"
+  }
+}

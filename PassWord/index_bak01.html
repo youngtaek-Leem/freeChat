@@ -1,0 +1,715 @@
+<!DOCTYPE html>
+<html lang="ko"><head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0,viewport-fit=cover">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Connect Vault">
+<meta name="theme-color" content="#0c0c18">
+<title>Connect Vault</title>
+<style>
+*,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+:root{
+--bg:#0c0c18;--bg2:#13131f;--bg3:#1a1a2e;
+--card:#16162a;--card2:#1e1e36;
+--border:rgba(255,255,255,0.08);
+--accent:#6366f1;--accent2:#818cf8;--aglow:rgba(99,102,241,0.3);
+--text:#e8e8f0;--text2:#9898b0;--text3:#5a5a7a;
+--ok:#34d399;--err:#f87171;
+--r:14px;--rs:10px;
+--st:env(safe-area-inset-top,0px);--sb:env(safe-area-inset-bottom,0px);
+}
+html,body{height:100%;width:100%;overflow:hidden;background:var(--bg);color:var(--text);
+font-family:-apple-system,BlinkMacSystemFont,"SF Pro Text","Segoe UI",sans-serif;
+-webkit-font-smoothing:antialiased;-webkit-tap-highlight-color:transparent;user-select:auto;-webkit-user-select:auto;cursor:pointer}
+.scr{position:fixed;top:0;left:0;right:0;bottom:0;display:none;flex-direction:column;z-index:1}
+.scr.on{display:flex;z-index:10}
+/* LOGIN */
+#sLogin{background:radial-gradient(ellipse at 50% 25%,#1a1550 0%,#0c0c18 65%);align-items:center;justify-content:center;padding:20px}
+.lgCard{width:100%;max-width:380px;background:rgba(22,22,42,.85);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+border:1px solid var(--border);border-radius:24px;padding:36px 28px;display:flex;flex-direction:column;align-items:center;gap:18px;
+box-shadow:0 20px 60px rgba(0,0,0,.5),0 0 0 1px rgba(99,102,241,.1)}
+.vIcon{width:72px;height:72px;background:linear-gradient(135deg,#4f46e5,#818cf8);border-radius:20px;
+display:flex;align-items:center;justify-content:center;font-size:36px;
+box-shadow:0 8px 24px rgba(99,102,241,.4);animation:flt 3s ease-in-out infinite}
+@keyframes flt{0%,100%{transform:translateY(0)}50%{transform:translateY(-6px)}}
+.lgCard h1{font-size:22px;font-weight:700;background:linear-gradient(135deg,#e8e8f0,#818cf8);-webkit-background-clip:text;-webkit-text-fill-color:transparent}
+.lgCard p{font-size:12px;color:var(--text3);margin-top:2px;text-align:center}
+.iWrap{position:relative;width:100%}
+.iWrap input{width:100%;background:rgba(255,255,255,.06);border:1px solid var(--border);border-radius:var(--rs);
+padding:13px 42px 13px 14px;color:var(--text);font-size:15px;outline:none;transition:.2s;-webkit-appearance:none}
+.iWrap input:focus{border-color:var(--accent);background:rgba(99,102,241,.08);box-shadow:0 0 0 3px var(--aglow)}
+.iWrap input::placeholder{color:var(--text3)}
+.eyeBtn{position:absolute;right:12px;top:50%;transform:translateY(-50%);background:none;border:none;color:var(--text3);cursor:pointer;font-size:18px;padding:4px}
+.btn{width:100%;padding:14px;border:none;border-radius:var(--rs);font-size:15px;font-weight:600;cursor:pointer;transition:.2s;letter-spacing:.2px}
+.btnP{background:linear-gradient(135deg,#4f46e5,#6366f1);color:#fff;box-shadow:0 4px 15px rgba(99,102,241,.4)}
+.btnP:active{transform:scale(.98)}
+.btnS{background:rgba(255,255,255,.06);color:var(--text2);border:1px solid var(--border)}
+.btnS:active{background:rgba(255,255,255,.1)}
+.divTxt{font-size:12px;color:var(--text3);text-align:center;position:relative}
+.divTxt::before,.divTxt::after{content:"";position:absolute;top:50%;width:38%;height:1px;background:var(--border)}
+.divTxt::before{left:0}.divTxt::after{right:0}
+@keyframes shake{0%,100%{transform:translateX(0)}20%{transform:translateX(-8px)}40%{transform:translateX(8px)}60%{transform:translateX(-5px)}80%{transform:translateX(5px)}}
+.shake{animation:shake .4s ease}
+/* VAULT */
+#sVault{background:var(--bg);padding-top:var(--st);padding-bottom:var(--sb)}
+.vHdr{background:rgba(12,12,24,.95);backdrop-filter:blur(20px);-webkit-backdrop-filter:blur(20px);
+border-bottom:1px solid var(--border);padding:14px 16px 10px;flex-shrink:0}
+.hTop{display:flex;align-items:center;justify-content:space-between;margin-bottom:10px}
+.hLogo{display:flex;align-items:center;gap:8px}
+.hLogo .ico{width:30px;height:30px;background:linear-gradient(135deg,#4f46e5,#818cf8);border-radius:8px;display:flex;align-items:center;justify-content:center;font-size:14px}
+.hLogo span{font-size:16px;font-weight:700}
+.hActs{display:flex;gap:6px}
+.icoBtn{width:34px;height:34px;border-radius:9px;border:1px solid var(--border);background:var(--bg3);color:var(--text2);
+display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:15px;transition:.2s}
+.icoBtn:active{transform:scale(.95)}
+.srch{position:relative}
+.srch input{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:9px;padding:9px 12px 9px 36px;
+color:var(--text);font-size:14px;outline:none;transition:.2s;-webkit-appearance:none}
+.srch input:focus{border-color:var(--accent)}
+.srch input::placeholder{color:var(--text3)}
+.srchIco{position:absolute;left:11px;top:50%;transform:translateY(-50%);color:var(--text3);font-size:14px;pointer-events:none}
+.vBody{flex:1;overflow-y:auto;overflow-x:hidden;padding:12px 12px 80px;-webkit-overflow-scrolling:touch}
+/* CARDS */
+.pCard{background:var(--card);border:1px solid var(--border);border-radius:var(--r);padding:14px 14px;margin-bottom:10px;
+display:flex;align-items:center;gap:12px;transition:.2s}
+.pCard:active{background:var(--card2)}
+.pAvatar{width:42px;height:42px;border-radius:11px;display:flex;align-items:center;justify-content:center;font-size:18px;flex-shrink:0;font-weight:700;color:#fff}
+.pInfo{flex:1;min-width:0}
+.pSvc{font-size:15px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.pUsr{font-size:12px;color:var(--text2);white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-top:2px}
+.pPw{font-size:12px;color:var(--text3);margin-top:4px;font-family:monospace;letter-spacing:1px}
+.pMemo{font-size:11px;color:var(--text3);margin-top:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:180px}
+.pMemo span{background:rgba(99,102,241,.12);border-radius:4px;padding:1px 6px;color:var(--accent2)}
+textarea.mInput{resize:vertical;min-height:72px;line-height:1.5;font-family:inherit}
+.pActs{display:flex;gap:6px;flex-shrink:0}
+.smBtn{width:32px;height:32px;border-radius:8px;border:1px solid var(--border);background:var(--bg3);
+color:var(--text2);display:flex;align-items:center;justify-content:center;cursor:pointer;font-size:13px;transition:.2s}
+.smBtn:active{transform:scale(.9)}
+.smBtn.del{color:var(--err);border-color:rgba(248,113,113,.3);background:rgba(248,113,113,.08)}
+.smBtn.ok{color:var(--ok);border-color:rgba(52,211,153,.3)}
+.smBtn.edit{color:var(--accent2);border-color:rgba(129,140,248,.3);background:rgba(99,102,241,.08)}
+/* FAB */
+.fab{position:fixed;bottom:calc(24px + var(--sb));right:20px;width:52px;height:52px;border-radius:16px;
+background:linear-gradient(135deg,#4f46e5,#6366f1);border:none;color:#fff;font-size:24px;cursor:pointer;
+box-shadow:0 4px 20px rgba(99,102,241,.5);display:flex;align-items:center;justify-content:center;transition:.2s;z-index:10}
+.fab:active{transform:scale(.92)}
+/* EMPTY */
+.empty{display:flex;flex-direction:column;align-items:center;justify-content:center;height:50%;gap:10px;color:var(--text3);text-align:center}
+.empty .bigIco{font-size:48px;opacity:.4}
+.empty p{font-size:14px}
+/* MODAL */
+.overlay{position:fixed;top:0;left:0;right:0;bottom:0;background:rgba(0,0,0,.8);backdrop-filter:blur(4px);-webkit-backdrop-filter:blur(4px);
+z-index:1000;display:none;align-items:flex-end;justify-content:center}
+.overlay.on{display:flex}
+.mPanel{width:100%;max-width:480px;background:var(--bg2);border-radius:24px 24px 0 0;padding:20px 20px calc(20px + var(--sb));
+transform:translateY(100%);transition:transform .3s cubic-bezier(.4,0,.2,1)}
+.overlay.on .mPanel{transform:translateY(0)}
+.mHdr{display:flex;align-items:center;justify-content:space-between;margin-bottom:18px}
+.mHdr h3{font-size:17px;font-weight:700}
+.closeBtn{width:28px;height:28px;border-radius:50%;background:var(--bg3);border:none;color:var(--text2);cursor:pointer;font-size:16px;display:flex;align-items:center;justify-content:center}
+.mRow{margin-bottom:12px}
+.mRow label{font-size:12px;color:var(--text2);margin-bottom:6px;display:block}
+.mInput{width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--rs);padding:12px 14px;
+color:var(--text);font-size:15px;outline:none;transition:.2s;-webkit-appearance:none}
+.mInput:focus{border-color:var(--accent);box-shadow:0 0 0 3px var(--aglow)}
+.mInput::placeholder{color:var(--text3)}
+/* TOAST */
+.toast{position:fixed;bottom:calc(80px + var(--sb));left:50%;transform:translateX(-50%) translateY(20px);
+background:rgba(30,30,50,.95);border:1px solid var(--border);border-radius:10px;padding:10px 18px;
+font-size:13px;color:var(--text);opacity:0;pointer-events:none;transition:.25s;z-index:999;white-space:nowrap}
+.toast.show{opacity:1;transform:translateX(-50%) translateY(0)}
+/* GENERATOR */
+.genOut{background:var(--bg3);border-radius:var(--rs);padding:14px;margin-bottom:14px;
+font-family:monospace;font-size:16px;letter-spacing:2px;color:var(--accent2);text-align:center;word-break:break-all}
+.slider{width:100%;accent-color:var(--accent)}
+.genOpts{display:flex;gap:8px;flex-wrap:wrap;margin:10px 0}
+.chip{padding:6px 12px;border-radius:20px;border:1px solid var(--border);background:var(--bg3);
+color:var(--text2);font-size:12px;cursor:pointer;transition:.2s}
+.chip.active{border-color:var(--accent);background:rgba(99,102,241,.15);color:var(--accent2)}
+/* SETTINGS */
+.setRow{display:flex;align-items:center;justify-content:space-between;padding:14px 0;border-bottom:1px solid var(--border)}
+.setRow:last-child{border-bottom:none}
+.setInfo h4{font-size:14px;font-weight:600}
+.setInfo p{font-size:12px;color:var(--text3);margin-top:2px}
+.setBtn{padding:8px 14px;border-radius:8px;font-size:13px;font-weight:600;border:none;cursor:pointer;transition:.2s}
+.setBtn.blue{background:rgba(99,102,241,.15);color:var(--accent2)}
+.setBtn.red{background:rgba(248,113,113,.12);color:var(--err)}
+input,textarea{user-select:text;-webkit-user-select:text}
+.btn,.icoBtn,.smBtn,.eyeBtn,.closeBtn,.chip,.setBtn{cursor:pointer}
+@media(min-width:600px){.vBody{padding:16px 20% 80px}}
+</style></head><body>
+
+<!-- LOGIN -->
+<div id="sLogin" class="scr on">
+<div class="lgCard">
+<div class="vIcon">🔐</div>
+<div style="text-align:center"><h1>Connect Vault</h1><p>마스터 패스워드로 금고를 잠금해제하세요</p></div>
+<div class="iWrap">
+<input type="password" id="pwIn" placeholder="마스터 패스워드" autocomplete="current-password">
+<button class="eyeBtn" onclick="toggleEye('pwIn',this)">👁</button>
+</div>
+<button class="btn btnP" onclick="app.login()">🔓 금고 열기</button>
+<div class="divTxt">또는</div>
+<button class="btn btnS" onclick="showOverlay('oSetup')">마스터 패스워드 설정</button>
+</div>
+</div>
+<!-- VAULT -->
+<div id="sVault" class="scr">
+<div class="vHdr">
+<div class="hTop">
+<div class="hLogo"><div class="ico">🔐</div><span>Connect Vault</span></div>
+<div class="hActs">
+<button class="icoBtn" onclick="showOverlay('oGen')" title="비밀번호 생성기">🎲</button>
+<button class="icoBtn" onclick="showOverlay('oSet')" title="설정">⚙️</button>
+<button class="icoBtn" onclick="app.lock()" title="잠그기">🔒</button>
+</div>
+</div>
+<div class="srch"><span class="srchIco">🔍</span><input type="search" id="srchIn" placeholder="서비스 또는 아이디 검색..." oninput="app.render()"></div>
+</div>
+<div class="vBody" id="vBody"></div>
+<button class="fab" onclick="showOverlay('oAdd')">＋</button>
+</div>
+<!-- ADD MODAL -->
+<div class="overlay" id="oAdd">
+<div class="mPanel">
+<div class="mHdr"><h3>새 항목 추가</h3><button class="closeBtn" onclick="hideOverlay('oAdd')">✕</button></div>
+<div class="mRow"><label>서비스명</label><input class="mInput" id="aSvc" placeholder="예: Google, Netflix"></div>
+<div class="mRow"><label>아이디 / 이메일</label><input class="mInput" id="aUsr" placeholder="user@email.com" autocomplete="off"></div>
+<div class="mRow"><label>비밀번호</label>
+<div class="iWrap"><input class="mInput" type="password" id="aPw" placeholder="비밀번호" autocomplete="new-password">
+<button class="eyeBtn" onclick="toggleEye('aPw',this)">👁</button></div></div>
+<div class="mRow"><label>메모 (선택)</label><textarea class="mInput" id="aMemo" placeholder="URL, 힌트, 메모 등..."></textarea></div>
+<button class="btn btnP" style="margin-top:6px" onclick="app.addEntry()">저장</button>
+</div>
+</div>
+<!-- GENERATOR MODAL -->
+<div class="overlay" id="oGen">
+<div class="mPanel">
+<div class="mHdr"><h3>🎲 비밀번호 생성기</h3><button class="closeBtn" onclick="hideOverlay('oGen')">✕</button></div>
+<div class="genOut" id="genOut">생성 중...</div>
+<div class="mRow"><label>길이: <span id="lenVal">16</span>자</label>
+<input class="slider" type="range" min="8" max="32" value="16" id="lenSlider" oninput="genPw()"></div>
+<div class="genOpts">
+<span class="chip active" data-k="upper" onclick="toggleChip(this)">대문자 A-Z</span>
+<span class="chip active" data-k="lower" onclick="toggleChip(this)">소문자 a-z</span>
+<span class="chip active" data-k="num" onclick="toggleChip(this)">숫자 0-9</span>
+<span class="chip active" data-k="sym" onclick="toggleChip(this)">특수문자</span>
+</div>
+<div style="display:flex;gap:8px;margin-top:4px">
+<button class="btn btnS" onclick="genPw()">🔄 새로 생성</button>
+<button class="btn btnP" onclick="copyGen()">📋 복사</button>
+</div>
+</div>
+</div>
+<!-- SETTINGS MODAL -->
+<div class="overlay" id="oSet">
+<div class="mPanel">
+<div class="mHdr"><h3>⚙️ 설정</h3><button class="closeBtn" onclick="hideOverlay('oSet')">✕</button></div>
+<div class="setRow">
+<div class="setInfo"><h4>금고 내보내기</h4><p>암호화된 백업 JSON 저장</p></div>
+<button class="setBtn blue" onclick="app.exportVault()">내보내기</button>
+</div>
+<div class="setRow">
+<div class="setInfo"><h4>금고 가져오기</h4><p>백업 파일에서 복원</p></div>
+<button class="setBtn blue" onclick="document.getElementById('importFile').click()">가져오기</button>
+</div>
+<div class="setRow">
+<div class="setInfo"><h4>마이그레이션 가져오기</h4><p>migrate.py로 변환한 파일</p></div>
+<button class="setBtn blue" onclick="document.getElementById('migrFile').click()">불러오기</button>
+</div>
+<div class="setRow">
+<div class="setInfo"><h4>마스터 패스워드 변경</h4><p>모든 데이터 초기화됨</p></div>
+<button class="setBtn red" onclick="hideOverlay('oSet');showOverlay('oSetup')">변경</button>
+</div>
+<input type="file" id="importFile" accept=".json" style="display:none" onchange="app.importVault(this)">
+<input type="file" id="migrFile" accept=".json" style="display:none" onchange="app.importMigrate(this)">
+</div>
+</div>
+<!-- EDIT MODAL -->
+<div class="overlay" id="oEdit">
+<div class="mPanel">
+<div class="mHdr"><h3>✏️ 항목 수정</h3><button class="closeBtn" onclick="hideOverlay('oEdit')">✕</button></div>
+<div class="mRow"><label>서비스명</label><input class="mInput" id="eSvc" placeholder="예: Google, Netflix"></div>
+<div class="mRow"><label>아이디 / 이메일</label><input class="mInput" id="eUsr" placeholder="user@email.com" autocomplete="off"></div>
+<div class="mRow"><label>비밀번호 (비워두면 기존 유지)</label>
+<div class="iWrap"><input class="mInput" type="password" id="ePw" placeholder="새 비밀번호 (선택)" autocomplete="new-password">
+<button class="eyeBtn" onclick="toggleEye('ePw',this)">👁</button></div></div>
+<div class="mRow"><label>메모 (선택)</label><textarea class="mInput" id="eMemo" placeholder="URL, 힌트, 메모 등..."></textarea></div>
+<button class="btn btnP" style="margin-top:6px" onclick="app.saveEdit()">수정 저장</button>
+</div>
+</div>
+<!-- SETUP MODAL -->
+<div class="overlay" id="oSetup">
+<div class="mPanel">
+<div class="mHdr"><h3>🛡️ 마스터 패스워드 설정</h3><button class="closeBtn" onclick="hideOverlay('oSetup')">✕</button></div>
+<p style="font-size:13px;color:var(--text3);margin-bottom:14px">⚠️ 설정 시 기존 데이터가 모두 삭제됩니다.</p>
+<div class="mRow"><label>새 마스터 패스워드</label><input class="mInput" type="password" id="newPw" placeholder="8자 이상 권장"></div>
+<div class="mRow"><label>확인</label><input class="mInput" type="password" id="newPw2" placeholder="동일하게 입력"></div>
+<button class="btn btnP" style="margin-top:6px" onclick="app.setup()">설정 완료</button>
+</div>
+</div>
+<div class="toast" id="toast"></div>
+
+<script>
+var $ = function(id){ return document.getElementById(id); };
+function showOverlay(id){
+  var el = $(id);
+  if(el) {
+    el.style.display = "flex";
+    el.classList.add("on");
+  }
+}
+function hideOverlay(id){
+  var el = $(id);
+  if(el) {
+    el.style.display = "none";
+    el.classList.remove("on");
+  }
+}
+function toggleEye(inputId,btn){
+  var el = $(inputId);
+  if(!el) return;
+  el.type = el.type === "password" ? "text" : "password";
+  btn.textContent = el.type === "password" ? "👁" : "🙈";
+}
+function toast(msg,dur){
+  var t = $("toast");
+  if(!t) return;
+  t.textContent = msg;
+  t.classList.add("show");
+  setTimeout(function(){ t.classList.remove("show"); }, dur || 2200);
+}
+function b64(buf){
+  var binary = "";
+  var bytes = new Uint8Array(buf);
+  for (var i = 0; i < bytes.byteLength; i++) {
+    binary += String.fromCharCode(bytes[i]);
+  }
+  return btoa(binary);
+}
+function unb64(s){
+  var binary = atob(s);
+  var bytes = new Uint8Array(binary.length);
+  for (var i = 0; i < binary.length; i++) {
+    bytes[i] = binary.charCodeAt(i);
+  }
+  return bytes;
+}
+function avatarColor(s){
+  var h=["#6366f1","#8b5cf6","#ec4899","#06b6d4","#10b981","#f59e0b","#ef4444"];
+  return h[(s||"").charCodeAt(0)%h.length];
+}
+function avatarLetter(s){
+  return (s||"?")[0].toUpperCase();
+}
+
+var C = {
+  key: null,
+  derive: function(pw, salt) {
+    var self = this;
+    return crypto.subtle.importKey("raw", new TextEncoder().encode(pw), "PBKDF2", false, ["deriveKey"])
+      .then(function(km) {
+        return crypto.subtle.deriveKey({name:"PBKDF2",salt:salt,iterations:100000,hash:"SHA-256"}, km, {name:"AES-GCM",length:256}, false, ["encrypt","decrypt"]);
+      })
+      .then(function(key) {
+        self.key = key;
+      });
+  },
+  encrypt: function(txt) {
+    var iv = crypto.getRandomValues(new Uint8Array(12));
+    return crypto.subtle.encrypt({name:"AES-GCM",iv:iv}, this.key, new TextEncoder().encode(txt))
+      .then(function(ct) {
+        var out = new Uint8Array(12 + ct.byteLength);
+        out.set(iv);
+        out.set(new Uint8Array(ct), 12);
+        return out;
+      });
+  },
+  decrypt: function(buf) {
+    var iv = buf.slice(0, 12), ct = buf.slice(12);
+    return crypto.subtle.decrypt({name:"AES-GCM",iv:iv}, this.key, ct)
+      .then(function(pt) {
+        return new TextDecoder().decode(pt);
+      });
+  },
+  salt: function() { return crypto.getRandomValues(new Uint8Array(16)); }
+};
+
+var DB = {
+  db: null,
+  init: function() {
+    var self = this;
+    return new Promise(function(res, rej) {
+      var r = indexedDB.open("ConnectVault", 1);
+      r.onupgradeneeded = function(e) {
+        var d = e.target.result;
+        d.createObjectStore("cfg", {keyPath: "k"});
+        d.createObjectStore("pw", {keyPath: "id", autoIncrement: true});
+      };
+      r.onsuccess = function(e) {
+        self.db = e.target.result;
+        res();
+      };
+      r.onerror = function() { rej(new Error("DB Init Failed")); };
+    });
+  },
+  tx: function(stores, mode) { return this.db.transaction(stores, mode || "readonly"); },
+  getCfg: function(k) {
+    var self = this;
+    return new Promise(function(r) {
+      var t = self.tx("cfg").objectStore("cfg").get(k);
+      t.onsuccess = function() { r(t.result ? t.result.v : undefined); };
+    });
+  },
+  setCfg: function(k, v) {
+    var self = this;
+    return new Promise(function(r) {
+      var t = self.tx("cfg", "readwrite").objectStore("cfg").put({k: k, v: v});
+      t.onsuccess = function() { r(); };
+    });
+  },
+  getAll: function() {
+    var self = this;
+    return new Promise(function(r) {
+      var t = self.tx("pw").objectStore("pw").getAll();
+      t.onsuccess = function() { r(t.result); };
+    });
+  },
+  add: function(svc, usr, epw, memo) {
+    var self = this;
+    return new Promise(function(r) {
+      var t = self.tx("pw", "readwrite").objectStore("pw").add({svc: svc, usr: usr, epw: epw, memo: memo || "", ts: new Date().toISOString()});
+      t.onsuccess = function() { r(t.result); };
+    });
+  },
+  del: function(id) {
+    var self = this;
+    return new Promise(function(r) {
+      var t = self.tx("pw", "readwrite").objectStore("pw").delete(id);
+      t.onsuccess = function() { r(); };
+    });
+  },
+  update: function(id, svc, usr, epw, memo) {
+    var self = this;
+    return new Promise(function(r) {
+      var store = self.tx("pw", "readwrite").objectStore("pw");
+      var t = store.get(id);
+      t.onsuccess = function() {
+        var rec = t.result;
+        rec.svc = svc; rec.usr = usr;
+        if (epw) rec.epw = epw;
+        rec.memo = memo != null ? memo : rec.memo || "";
+        rec.updated = new Date().toISOString();
+        var u = store.put(rec);
+        u.onsuccess = function() { r(); };
+      };
+    });
+  },
+  clear: function() {
+    var self = this;
+    return new Promise(function(r) {
+      var t = self.tx("pw", "readwrite").objectStore("pw").clear();
+      t.onsuccess = function() { r(); };
+    });
+  }
+};
+
+var app = {
+  init: function() {
+    var self = this;
+    DB.init().then(function() {
+      var pwIn = $("pwIn");
+      if (pwIn) {
+        pwIn.addEventListener("keydown", function(e) {
+          if (e.key === "Enter") self.login();
+        });
+      }
+      document.querySelectorAll(".overlay").forEach(function(o) {
+        o.addEventListener("click", function(e) {
+          if (e.target === o) hideOverlay(o.id);
+        });
+      });
+      genPw();
+    }).catch(function(err) {
+      console.error(err);
+    });
+  },
+  login: function() {
+    var self = this;
+    var pw = $("pwIn").value;
+    if (!pw) { toast("패스워드를 입력하세요"); return; }
+    var salt, verify;
+    DB.getCfg("salt").then(function(s) {
+      salt = s;
+      return DB.getCfg("verify");
+    }).then(function(v) {
+      verify = v;
+      if (!salt || !verify) { throw new Error("SETUP_REQUIRED"); }
+      return C.derive(pw, salt);
+    }).then(function() {
+      return C.decrypt(verify);
+    }).then(function() {
+      self.showVault();
+    }).catch(function(err) {
+      if (err.message === "SETUP_REQUIRED") {
+        toast("먼저 패스워드를 설정하세요");
+      } else {
+        var el = $("pwIn");
+        el.classList.add("shake");
+        setTimeout(function() { el.classList.remove("shake"); }, 400);
+        toast("패스워드가 틀렸습니다");
+      }
+    });
+  },
+  setup: function() {
+    var self = this;
+    var p1 = $("newPw").value, p2 = $("newPw2").value;
+    if (p1.length < 4) { toast("4자 이상 입력하세요"); return; }
+    if (p1 !== p2) { toast("패스워드가 일치하지 않습니다"); return; }
+    var salt = C.salt();
+    C.derive(p1, salt).then(function() {
+      return C.encrypt("CONNECT_VAULT_OK");
+    }).then(function(verify) {
+      return Promise.all([
+        DB.setCfg("salt", salt),
+        DB.setCfg("verify", verify),
+        DB.clear()
+      ]);
+    }).then(function() {
+      hideOverlay("oSetup");
+      $("newPw").value = ""; $("newPw2").value = "";
+      toast("설정 완료");
+      self.showVault();
+    });
+  },
+  showVault: function() {
+    $("sLogin").style.display = "none";
+    $("sVault").style.display = "flex";
+    $("sVault").classList.add("on");
+    this.render();
+  },
+  lock: function() {
+    C.key = null;
+    $("sVault").style.display = "none";
+    $("sVault").classList.remove("on");
+    $("sLogin").style.display = "flex";
+    $("sLogin").classList.add("on");
+    $("pwIn").value = "";
+  },
+  render: function() {
+    var self = this;
+    var q = ($("srchIn").value || "").toLowerCase();
+    DB.getAll().then(function(all) {
+      var body = $("vBody");
+      var filtered = all.filter(function(e) {
+        return e.svc.toLowerCase().indexOf(q) !== -1 || e.usr.toLowerCase().indexOf(q) !== -1;
+      });
+      if (!filtered.length) {
+        body.innerHTML = "<div class='empty'><div class='bigIco'>🔒</div><p>" + (q ? "검색 결과 없음" : "저장된 항목이 없습니다") + "</p></div>";
+        return;
+      }
+      body.innerHTML = filtered.map(function(e) {
+        return "<div class='pCard' id='c" + e.id + "'>" +
+          "<div class='pAvatar' style='background:" + avatarColor(e.svc) + "'>" + avatarLetter(e.svc) + "</div>" +
+          "<div class='pInfo'>" +
+            "<div class='pSvc'>" + esc(e.svc) + "</div>" +
+            "<div class='pUsr'>" + esc(e.usr || "—") + "</div>" +
+            "<div class='pPw' id='pw" + e.id + "'>••••••••</div>" +
+            (e.memo ? "<div class='pMemo'><span>📝 " + esc(e.memo.slice(0, 40)) + "</span></div>" : "") +
+          "</div>" +
+          "<div class='pActs'>" +
+            "<button class='smBtn' onclick='app.togglePw(" + e.id + ")' id='eye" + e.id + "'>👁</button>" +
+            "<button class='smBtn ok' onclick='app.copyPw(" + e.id + ")'>📋</button>" +
+            "<button class='smBtn edit' onclick='app.editEntry(" + e.id + ")'>✏️</button>" +
+            "<button class='smBtn del' onclick='app.del(" + e.id + ")'>🗑</button>" +
+          "</div>" +
+        "</div>";
+      }).join("");
+    });
+  },
+  _revealed: {},
+  togglePw: function(id) {
+    var self = this;
+    var el = $("pw" + id);
+    if (this._revealed[id]) {
+      el.textContent = "••••••••";
+      delete this._revealed[id];
+      return;
+    }
+    DB.getAll().then(function(all) {
+      var e = all.filter(function(x) { return x.id === id; })[0];
+      if (!e) return;
+      return C.decrypt(e.epw);
+    }).then(function(pt) {
+      if (pt) {
+        el.textContent = pt;
+        self._revealed[id] = pt;
+      }
+    }).catch(function() { toast("실패"); });
+  },
+  copyPw: function(id) {
+    DB.getAll().then(function(all) {
+      var e = all.filter(function(x) { return x.id === id; })[0];
+      if (!e) return;
+      return C.decrypt(e.epw);
+    }).then(function(pt) {
+      return navigator.clipboard.writeText(pt);
+    }).then(function() {
+      toast("복사됨");
+    }).catch(function() { toast("복사 실패"); });
+  },
+  addEntry: function() {
+    var self = this;
+    var svc = $("aSvc").value.trim(), usr = $("aUsr").value.trim(), pw = $("aPw").value, memo = $("aMemo").value.trim();
+    if (!svc || !pw) { toast("필수 항목을 입력하세요"); return; }
+    C.encrypt(pw).then(function(epw) {
+      return DB.add(svc, usr, epw, memo);
+    }).then(function() {
+      $("aSvc").value = ""; $("aUsr").value = ""; $("aPw").value = ""; $("aMemo").value = "";
+      hideOverlay("oAdd"); toast("저장됨");
+      self.render();
+    });
+  },
+  del: function(id) {
+    var self = this;
+    if (!confirm("삭제하시겠습니까?")) return;
+    DB.del(id).then(function() {
+      toast("삭제됨");
+      self.render();
+    });
+  },
+  _editId: null,
+  editEntry: function(id) {
+    DB.getAll().then(function(all) {
+      var e = all.filter(function(x) { return x.id === id; })[0];
+      if (!e) return;
+      app._editId = id;
+      $("eSvc").value = e.svc;
+      $("eUsr").value = e.usr || "";
+      $("ePw").value = "";
+      $("eMemo").value = e.memo || "";
+      showOverlay("oEdit");
+    });
+  },
+  saveEdit: function() {
+    var self = this;
+    var id = this._editId;
+    if (!id) { toast("오류"); return; }
+    var svc = $("eSvc").value.trim(), usr = $("eUsr").value.trim(), pw = $("ePw").value, memo = $("eMemo").value.trim();
+    if (!svc) { toast("서비스명 필수"); return; }
+    var epwPromise = pw ? C.encrypt(pw) : Promise.resolve(null);
+    epwPromise.then(function(epw) {
+      return DB.update(id, svc, usr, epw, memo);
+    }).then(function() {
+      self._editId = null;
+      hideOverlay("oEdit"); toast("수정됨");
+      self.render();
+    });
+  },
+  exportVault: function() {
+    var all, salt, verify;
+    DB.getAll().then(function(a) {
+      all = a;
+      return DB.getCfg("salt");
+    }).then(function(s) {
+      salt = s;
+      return DB.getCfg("verify");
+    }).then(function(v) {
+      verify = v;
+      var data = {
+        v: 2, app: "ConnectVault", at: new Date().toISOString(),
+        salt: b64(salt), verify: b64(verify),
+        entries: all.map(function(e) {
+          return { id: e.id, svc: e.svc, usr: e.usr, epw: b64(e.epw), ts: e.ts };
+        })
+      };
+      dl(JSON.stringify(data, null, 2), "vault_backup.json", "application/json");
+    });
+  },
+  importVault: function(input) {
+    var self = this;
+    var file = input.files[0]; if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        var d = JSON.parse(e.target.result);
+        if (d.v !== 2) throw new Error("형식 오류");
+        var salt = unb64(d.salt), verify = unb64(d.verify);
+        DB.setCfg("salt", salt).then(function() {
+          return DB.setCfg("verify", verify);
+        }).then(function() {
+          return DB.clear();
+        }).then(function() {
+          var promises = d.entries.map(function(x) {
+            return DB.add(x.svc, x.usr, unb64(x.epw));
+          });
+          return Promise.all(promises);
+        }).then(function() {
+          toast("가져오기 완료");
+          self.render();
+        });
+      } catch(ex) { toast("오류: " + ex.message); }
+    };
+    reader.readAsText(file);
+  },
+  importMigrate: function(input) {
+    var self = this;
+    var file = input.files[0]; if (!file) return;
+    var reader = new FileReader();
+    reader.onload = function(e) {
+      try {
+        var d = JSON.parse(e.target.result);
+        var promises = d.entries.map(function(x) {
+          return C.encrypt(x.password).then(function(epw) {
+            return DB.add(x.service, x.username, epw);
+          });
+        });
+        Promise.all(promises).then(function() {
+          toast("가져오기 완료");
+          self.render();
+        });
+      } catch(ex) { toast("오류"); }
+    };
+    reader.readAsText(file);
+  }
+};
+
+var genOpts = { upper: true, lower: true, num: true, sym: true };
+function toggleChip(el) {
+  var k = el.dataset.k;
+  genOpts[k] = !genOpts[k];
+  el.classList.toggle("active", genOpts[k]);
+  genPw();
+}
+function genPw() {
+  var len = +document.getElementById("lenSlider").value;
+  var lenVal = document.getElementById("lenVal");
+  if(lenVal) lenVal.textContent = len;
+  var chars = "";
+  if (genOpts.upper) chars += "ABCDEFGHIJKLMNOPQRSTUVWXYZ";
+  if (genOpts.lower) chars += "abcdefghijklmnopqrstuvwxyz";
+  if (genOpts.num) chars += "0123456789";
+  if (genOpts.sym) chars += "!@#$%^&*()-_=+[]{}|;:,.<>?";
+  var out = document.getElementById("genOut");
+  if (!chars) { if(out) out.textContent = "옵션을 선택하세요"; return; }
+  var arr = crypto.getRandomValues(new Uint8Array(len));
+  if(out) out.textContent = Array.prototype.map.call(arr, function(b) { return chars[b % chars.length]; }).join("");
+}
+function copyGen() {
+  var out = document.getElementById("genOut");
+  if(out) navigator.clipboard.writeText(out.textContent).then(function() { toast("복사됨"); });
+}
+function esc(s) {
+  if(!s) return "";
+  return s.toString().replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;");
+}
+function dl(content, filename, type) {
+  var a = document.createElement("a");
+  a.href = URL.createObjectURL(new Blob([content], { type: type }));
+  a.download = filename;
+  a.click();
+}
+
+app.init();
+</script></body></html>
