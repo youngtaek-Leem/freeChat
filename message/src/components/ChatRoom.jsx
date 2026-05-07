@@ -225,87 +225,162 @@ const ChatRoom = ({ session }) => {
   };
 
   return (
-    <div className="container" style={{ display: 'flex', flexDirection: 'column', height: '100vh', paddingBottom: '1rem' }}>
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '1rem' }}>
+    <div className="container" style={{ 
+      display: 'flex', 
+      flexDirection: 'column', 
+      height: '100vh', 
+      padding: 0,
+      maxWidth: '600px',
+      backgroundColor: 'var(--bg-color)'
+    }}>
+      {/* Mobile Header */}
+      <header style={{ 
+        display: 'flex', 
+        justifyContent: 'space-between', 
+        alignItems: 'center', 
+        padding: '0.75rem 1rem',
+        borderBottom: '2px solid var(--primary-color)',
+        backgroundColor: 'color-mix(in srgb, var(--primary-color), white 75%)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        position: 'sticky',
+        top: 0,
+        zIndex: 10
+      }}>
         <Link to="/" className="btn" style={{ 
           textDecoration: 'none', 
-          backgroundColor: '#4b5563', 
+          backgroundColor: 'transparent', 
           width: 'auto', 
-          padding: '5px 12px', 
-          fontSize: '0.9rem',
-          margin: 0
-        }}>← Back</Link>
-        <h2 style={{ margin: 0, fontSize: '1.1rem', wordBreak: 'break-all', maxWidth: '60%', textAlign: 'center' }}>
-          {friendProfile?.email || 'Loading...'}
+          padding: '5px 8px', 
+          fontSize: '1rem',
+          margin: 0,
+          color: 'var(--primary-color)'
+        }}>〈 Back</Link>
+        <h2 style={{ 
+          margin: 0, 
+          fontSize: '1.1rem', 
+          fontWeight: '700',
+          whiteSpace: 'nowrap',
+          overflow: 'hidden',
+          textOverflow: 'ellipsis',
+          maxWidth: '50%'
+        }}>
+          {friendProfile?.username || friendProfile?.email?.split('@')[0] || 'Loading...'}
         </h2>
         <button 
           onClick={clearChat}
           style={{ 
             background: 'none', 
-            border: '1px solid rgba(239, 68, 68, 0.5)', 
+            border: 'none', 
             color: '#ef4444', 
             cursor: 'pointer',
-            padding: '5px 10px',
-            borderRadius: '5px',
-            fontSize: '0.8rem'
+            padding: '5px',
+            fontSize: '1rem',
+            opacity: 0.9,
+            fontWeight: 'bold'
           }}
         >
-          🗑️ Clear All
+          Clear
         </button>
       </header>
 
-      <div className="glass-panel" style={{ flexGrow: 1, display: 'flex', flexDirection: 'column', overflow: 'hidden' }}>
-        <div style={{ flexGrow: 1, overflowY: 'auto', padding: '1rem', display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-          {messages.map((msg, i) => {
-            const isMe = msg.sender === session.user.id;
-            return (
-              <div key={i} style={{
-                alignSelf: isMe ? 'flex-end' : 'flex-start',
-                backgroundColor: isMe ? 'var(--primary-color)' : 'rgba(255,255,255,0.1)',
-                padding: '0.75rem 1rem',
-                borderRadius: '12px',
-                maxWidth: '70%',
-                wordBreak: 'break-word',
-                position: 'relative',
-                group: 'true' // For hover detection
-              }}>
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '1rem' }}>
-                  <div>{msg.text}</div>
-                  {isMe && (
-                    <button 
-                      onClick={() => deleteMessage(msg.messageId)}
-                      style={{ 
-                        background: 'none', 
-                        border: 'none', 
-                        color: 'rgba(255,255,255,0.4)', 
-                        cursor: 'pointer',
-                        fontSize: '0.8rem',
-                        padding: '0 0 0 5px'
-                      }}
-                      title="Delete message"
-                    >
-                      ✕
-                    </button>
-                  )}
-                </div>
-                <div style={{ fontSize: '0.7rem', color: 'rgba(255,255,255,0.5)', marginTop: '0.25rem', textAlign: isMe ? 'right' : 'left' }}>
-                  {new Date(msg.timestamp).toLocaleTimeString()}
-                </div>
+      {/* Message List */}
+      <div style={{ 
+        flexGrow: 1, 
+        overflowY: 'auto', 
+        padding: '1rem', 
+        display: 'flex', 
+        flexDirection: 'column', 
+        gap: '0.75rem',
+        backgroundImage: 'radial-gradient(circle at top right, color-mix(in srgb, var(--primary-color), transparent 92%), transparent)'
+      }}>
+        {messages.map((msg, i) => {
+          const isMe = msg.sender === session.user.id;
+          return (
+            <div key={i} style={{
+              alignSelf: isMe ? 'flex-end' : 'flex-start',
+              backgroundColor: isMe ? 'var(--primary-color)' : 'var(--surface-color)',
+              color: isMe ? 'white' : 'var(--text-main)',
+              padding: '0.6rem 0.9rem',
+              borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
+              maxWidth: '85%',
+              wordBreak: 'break-word',
+              position: 'relative',
+              boxShadow: '0 2px 5px rgba(0,0,0,0.1)'
+            }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
+                <div style={{ fontSize: '0.95rem', lineHeight: '1.4' }}>{msg.text}</div>
+                {isMe && (
+                  <button 
+                    onClick={() => deleteMessage(msg.messageId)}
+                    style={{ 
+                      background: 'none', 
+                      border: 'none', 
+                      color: 'rgba(255,255,255,0.4)', 
+                      cursor: 'pointer',
+                      fontSize: '0.7rem',
+                      marginTop: '2px'
+                    }}
+                  >
+                    ✕
+                  </button>
+                )}
               </div>
-            );
-          })}
-          <div ref={messagesEndRef} />
-        </div>
-        <form onSubmit={sendMessage} style={{ display: 'flex', gap: '0.5rem', marginTop: '1rem', borderTop: '1px solid var(--border-color)', paddingTop: '1rem' }}>
+              <div style={{ 
+                fontSize: '0.65rem', 
+                color: isMe ? 'rgba(255,255,255,0.6)' : 'var(--text-muted)', 
+                marginTop: '0.2rem', 
+                textAlign: isMe ? 'right' : 'left' 
+              }}>
+                {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+              </div>
+            </div>
+          );
+        })}
+        <div ref={messagesEndRef} />
+      </div>
+
+      {/* Mobile Input Area */}
+      <div style={{ 
+        padding: '0.75rem 1rem 1.5rem 1rem', 
+        backgroundColor: 'color-mix(in srgb, var(--primary-color), white 75%)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        borderTop: '2px solid var(--primary-color)'
+      }}>
+        <form onSubmit={sendMessage} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
           <input 
             type="text" 
             value={input} 
             onChange={(e) => setInput(e.target.value)} 
             placeholder="Type a message..."
             className="input-field"
-            style={{ marginBottom: 0, flexGrow: 1 }}
+            style={{ 
+              marginBottom: 0, 
+              flexGrow: 1, 
+              borderRadius: '24px',
+              paddingLeft: '1.25rem',
+              backgroundColor: 'var(--surface-color)',
+              border: '1px solid var(--border-color)',
+              color: 'var(--text-main)'
+            }}
           />
-          <button type="submit" className="btn" style={{ width: 'auto' }}>Send</button>
+          <button 
+            type="submit" 
+            className="btn" 
+            style={{ 
+              width: '45px', 
+              height: '45px', 
+              borderRadius: '50%', 
+              padding: 0,
+              minWidth: '45px',
+              backgroundColor: input.trim() ? 'var(--primary-color)' : 'rgba(255,255,255,0.1)',
+              transition: 'background-color 0.3s'
+            }}
+            disabled={!input.trim()}
+          >
+            ↑
+          </button>
         </form>
       </div>
     </div>

@@ -67,3 +67,4 @@ Strong success criteria let you loop independently. Weak criteria ("make it work
 ## 5. System Instructions & Aliases
 
 - **@ollama Default Model:** When the user types `@ollama` without specifying a model name, you MUST default to using the `gemma4:31b-cloud` model via the Ollama MCP to process their request.
+- **Error Recovery:** If an "Error Our servers are experiencing high traffic right now, please try again in a minute." occurs, you MUST retry the operation and execute the task again to ensure completion.

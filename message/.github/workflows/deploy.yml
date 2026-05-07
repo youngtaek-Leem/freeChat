@@ -4,18 +4,18 @@ on:
   push:
     branches: [ main ]
 
+permissions:
+  contents: write
+
 jobs:
   build-and-deploy:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v3
+        uses: actions/checkout@v4
 
       - name: Install and Build
         run: |
-          cd message
-          if [ -z "$VITE_SUPABASE_URL" ]; then echo "ERROR: VITE_SUPABASE_URL is missing"; exit 1; fi
-          if [ -z "$VITE_SUPABASE_ANON_KEY" ]; then echo "ERROR: VITE_SUPABASE_ANON_KEY is missing"; exit 1; fi
           npm install
           npm run build
         env:
@@ -25,5 +25,5 @@ jobs:
       - name: Deploy
         uses: JamesIves/github-pages-deploy-action@v4
         with:
-          folder: message/dist
+          folder: dist
           branch: gh-pages

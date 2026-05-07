@@ -13,12 +13,12 @@ export default function Discovery({ session }) {
     if (!searchTerm.trim()) return;
 
     setLoading(true);
-    // Search in keywords or bio
+    // Search in username, keywords, or bio
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, bio, keywords, avatar_url')
+      .select('id, username, email, bio, keywords, avatar_url')
       .neq('id', session.user.id)
-      .or(`keywords.ilike.%${searchTerm}%,bio.ilike.%${searchTerm}%`);
+      .or(`username.ilike.%${searchTerm}%,keywords.ilike.%${searchTerm}%,bio.ilike.%${searchTerm}%`);
 
     if (error) {
       console.error(error);
@@ -30,7 +30,6 @@ export default function Discovery({ session }) {
   };
 
   const handleAddFriend = async (receiverId) => {
-    // Add friend logic: insert into connections table
     const { error } = await supabase
       .from('connections')
       .insert({
@@ -40,10 +39,10 @@ export default function Discovery({ session }) {
       });
     
     if (error) {
-      if (error.code === '23505') { // Unique violation
-        alert('Friend request already sent or you are already friends!');
+      if (error.code === '23505') {
+        alert('Already sent request!');
       } else {
-        alert('Error sending request: ' + error.message);
+        alert('Error: ' + error.message);
       }
     } else {
       alert('Friend request sent!');
@@ -51,54 +50,81 @@ export default function Discovery({ session }) {
   };
 
   return (
-    <div className="container">
-      <header style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '2rem' }}>
-        <h2>Discover Friends</h2>
-        <button onClick={() => navigate('/dashboard')} className="btn" style={{ width: 'auto', backgroundColor: 'var(--border-color)' }}>Back to Dashboard</button>
+    <div className="container" style={{ padding: 0, height: '100vh', display: 'flex', flexDirection: 'column' }}>
+      <header style={{ 
+        padding: '1.5rem 1rem 1rem 1rem', 
+        backgroundColor: 'color-mix(in srgb, var(--primary-color), white 75%)',
+        backdropFilter: 'blur(20px)',
+        WebkitBackdropFilter: 'blur(20px)',
+        borderBottom: '2px solid var(--primary-color)'
+      }}>
+        <div style={{ display: 'flex', justifyContent: 'flex-start', alignItems: 'center', width: '100%' }}>
+          <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: '800' }}>Search</h1>
+        </div>
       </header>
 
-      <div className="glass-panel" style={{ marginBottom: '2rem' }}>
-        <form onSubmit={handleSearch} style={{ display: 'flex', gap: '1rem' }}>
+      <div style={{ padding: '1rem' }}>
+        <form onSubmit={handleSearch} style={{ display: 'flex', gap: '0.5rem' }}>
           <input
             type="text"
             value={searchTerm}
             onChange={(e) => setSearchTerm(e.target.value)}
-            placeholder="Search by keywords or bio..."
+            placeholder="Search by name, keywords..."
             className="input-field"
-            style={{ marginBottom: 0 }}
+            style={{ marginBottom: 0, borderRadius: '12px' }}
           />
-          <button type="submit" className="btn" disabled={loading} style={{ width: 'auto' }}>
-            {loading ? 'Searching...' : 'Search'}
+          <button type="submit" className="btn" disabled={loading} style={{ width: '80px', padding: 0 }}>
+            {loading ? '...' : 'Search'}
           </button>
         </form>
       </div>
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fill, minmax(300px, 1fr))', gap: '1.5rem' }}>
-        {results.map((profile) => (
-          <div key={profile.id} className="glass-panel" style={{ display: 'flex', flexDirection: 'column', gap: '1rem' }}>
-            <div style={{ display: 'flex', alignItems: 'center', gap: '1rem' }}>
-              <div style={{
-                width: '60px', height: '60px', borderRadius: '50%', backgroundColor: 'var(--border-color)',
+      <div style={{ flexGrow: 1, overflowY: 'auto', padding: '0 1rem', paddingBottom: '80px' }}>
+        {results.length === 0 && !loading ? (
+          <div style={{ textAlign: 'center', marginTop: '3rem', opacity: 0.5 }}>
+            <p>Try searching for keywords like "coding" or "music"</p>
+          </div>
+        ) : (
+          results.map((profile) => (
+            <div key={profile.id} style={{ 
+              display: 'flex', 
+              alignItems: 'center', 
+              gap: '1rem', 
+              padding: '1rem 0',
+              borderBottom: '1px solid rgba(255,255,255,0.03)'
+            }}>
+              <div style={{ 
+                width: '50px', 
+                height: '50px', 
+                borderRadius: '18px', 
+                backgroundColor: 'var(--surface-color)',
                 backgroundImage: profile.avatar_url ? `url(${profile.avatar_url})` : 'none',
-                backgroundSize: 'cover', backgroundPosition: 'center'
-              }}></div>
-              <div>
-                <strong>{profile.keywords ? profile.keywords.split(',')[0] : 'User'}</strong>
+                backgroundSize: 'cover',
+                display: 'flex',
+                alignItems: 'center',
+                justifyContent: 'center',
+                fontSize: '1.2rem',
+                fontWeight: 'bold',
+                color: 'var(--primary-color)',
+                flexShrink: 0
+              }}>
+                {!profile.avatar_url && (profile.username || profile.email || '?')[0].toUpperCase()}
               </div>
+              <div style={{ flexGrow: 1, minWidth: 0 }}>
+                <div style={{ fontWeight: '600', fontSize: '1rem' }}>{profile.username || profile.email?.split('@')[0]}</div>
+                <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+                  {profile.keywords || profile.bio || 'No keywords set'}
+                </div>
+              </div>
+              <button 
+                className="btn" 
+                onClick={() => handleAddFriend(profile.id)}
+                style={{ width: 'auto', padding: '6px 12px', fontSize: '0.8rem', borderRadius: '10px' }}
+              >
+                Add
+              </button>
             </div>
-            <p style={{ margin: 0, flexGrow: 1, color: 'var(--text-main)', fontSize: '0.9rem' }}>{profile.bio || 'No bio available.'}</p>
-            <div style={{ color: 'var(--text-muted)', fontSize: '0.8rem', marginBottom: '1rem' }}>
-              Keywords: {profile.keywords || 'None'}
-            </div>
-            <button className="btn" onClick={() => handleAddFriend(profile.id)}>
-              Add Friend
-            </button>
-          </div>
-        ))}
-        {results.length === 0 && !loading && (
-          <div style={{ gridColumn: '1 / -1', textAlign: 'center', color: 'var(--text-muted)', padding: '2rem' }}>
-            No users found. Try a different keyword!
-          </div>
+          ))
         )}
       </div>
     </div>
