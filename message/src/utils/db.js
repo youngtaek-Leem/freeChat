@@ -87,7 +87,8 @@ export const dbUtils = {
       await db.put(STORE_NAME, { 
         ...message, 
         text: textToSave,
-        read: message.read ? 1 : 0 
+        read: message.read ? 1 : 0,
+        recipientRead: message.recipientRead ? 1 : 0
       });
       console.log(`[DB] Saved message ${message.messageId} to room ${message.roomId}`);
     } catch (e) {
@@ -149,6 +150,21 @@ export const dbUtils = {
     for (const msg of msgs) {
       if (msg.read === 0) {
         msg.read = 1;
+        await store.put(msg);
+      }
+    }
+    await tx.done;
+  },
+
+  async markMyMessagesAsRecipientRead(roomId, myId) {
+    const db = await this.initDB();
+    const tx = db.transaction(STORE_NAME, 'readwrite');
+    const store = tx.objectStore(STORE_NAME);
+    const msgs = await store.index('roomId').getAll(roomId);
+    
+    for (const msg of msgs) {
+      if (msg.sender === myId && !msg.recipientRead) {
+        msg.recipientRead = 1;
         await store.put(msg);
       }
     }

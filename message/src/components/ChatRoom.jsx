@@ -14,7 +14,7 @@ const ChatRoom = ({ session }) => {
   const [friendProfile, setFriendProfile] = useState(null);
   const messagesEndRef = useRef(null);
   const channelRef = useRef(null);
-  const { setActiveRoom } = useChat();
+  const { setActiveRoom, markAsRead } = useChat();
 
   // We will use the roomId as the shared secret for this MVP
   const sharedSecret = roomId;
@@ -69,6 +69,24 @@ const ChatRoom = ({ session }) => {
               if (prev.find(m => m.messageId === newMessage.messageId)) return prev;
               return [...prev, newMessage];
             });
+
+            if (sender !== session.user.id) {
+              markAsRead(roomId);
+              const readPayload = {
+                type: 'broadcast',
+                event: 'read_receipt',
+                payload: { roomId, readerId: session.user.id }
+              };
+              if (channelRef.current) channelRef.current.send(readPayload);
+              
+              const userChannel = supabase.channel(`user:${sender}`);
+              userChannel.subscribe(async (s) => {
+                if (s === 'SUBSCRIBED') {
+                  await userChannel.send(readPayload);
+                  setTimeout(() => supabase.removeChannel(userChannel), 1000);
+                }
+              });
+            }
           } catch (e) {
             console.error("Failed to decrypt message:", e);
           }
@@ -82,11 +100,30 @@ const ChatRoom = ({ session }) => {
           console.log("ChatRoom: Received clear_chat event");
           setMessages([]);
           await dbUtils.clearRoomMessages(roomId);
+        } else if (event === 'read_receipt') {
+          const { roomId: rId, readerId } = payload;
+          if (rId === roomId && readerId === friendId) {
+            setMessages(prev => prev.map(m => m.sender === session.user.id ? { ...m, recipientRead: true } : m));
+          }
         }
       })
       .subscribe((status) => {
         if (status === 'SUBSCRIBED') {
           console.log('Joined room:', roomId);
+          const readPayload = {
+            type: 'broadcast',
+            event: 'read_receipt',
+            payload: { roomId, readerId: session.user.id }
+          };
+          channel.send(readPayload);
+          
+          const userChannel = supabase.channel(`user:${friendId}`);
+          userChannel.subscribe(async (s) => {
+            if (s === 'SUBSCRIBED') {
+              await userChannel.send(readPayload);
+              setTimeout(() => supabase.removeChannel(userChannel), 1000);
+            }
+          });
         }
       });
 
@@ -119,7 +156,8 @@ const ChatRoom = ({ session }) => {
         sender: session.user.id, 
         text: input, 
         timestamp,
-        read: true
+        read: true,
+        recipientRead: false
       };
       
       console.log("ChatRoom: Saving to local DB and updating UI...");
@@ -330,9 +368,16 @@ const ChatRoom = ({ session }) => {
                 fontSize: '0.65rem', 
                 color: isMe ? 'rgba(255,255,255,0.6)' : 'var(--text-muted)', 
                 marginTop: '0.2rem', 
-                textAlign: isMe ? 'right' : 'left' 
+                textAlign: isMe ? 'right' : 'left',
+                display: 'flex',
+                justifyContent: isMe ? 'flex-end' : 'flex-start',
+                alignItems: 'center',
+                gap: '4px'
               }}>
                 {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                {isMe && !msg.recipientRead && (
+                  <span style={{ fontSize: '0.6rem' }}>✓</span>
+                )}
               </div>
             </div>
           );

@@ -83,6 +83,9 @@ export const ChatProvider = ({ children }) => {
           await dbUtils.clearRoomMessages(roomId);
           const counts = await dbUtils.getUnreadCounts();
           setUnreadCounts(counts);
+        } else if (event === 'read_receipt') {
+          const { roomId, readerId } = payload;
+          await dbUtils.markMyMessagesAsRecipientRead(roomId, myId);
         }
       })
       .subscribe((status) => {

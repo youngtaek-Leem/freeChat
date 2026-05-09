@@ -32,18 +32,14 @@ export default function Discovery({ session }) {
   const handleAddFriend = async (receiverId) => {
     const { error } = await supabase
       .from('connections')
-      .insert({
+      .upsert({
         requester_id: session.user.id,
         receiver_id: receiverId,
         status: 'pending'
-      });
+      }, { onConflict: 'requester_id,receiver_id' });
     
     if (error) {
-      if (error.code === '23505') {
-        alert('Already sent request!');
-      } else {
-        alert('Error: ' + error.message);
-      }
+      alert('Error: ' + error.message);
     } else {
       alert('Friend request sent!');
     }

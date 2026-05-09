@@ -1,0 +1,19 @@
+# Dependencies
+node_modules/
+
+# Build output
+dist/
+
+# Environment variables (contains secrets)
+.env
+.env.local
+.env.*.local
+
+# Vite cache
+.vite/
+
+# macOS
+.DS_Store
+
+# Claude worktrees
+.claude/worktrees/
