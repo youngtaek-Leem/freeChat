@@ -13,12 +13,13 @@ export default function Discovery({ session }) {
     if (!searchTerm.trim()) return;
 
     setLoading(true);
-    // Search in username, keywords, or bio
+    // Strip PostgREST filter syntax characters to prevent filter injection
+    const safe = searchTerm.replace(/[,()]/g, '').trim();
     const { data, error } = await supabase
       .from('profiles')
-      .select('id, username, email, bio, keywords, avatar_url')
+      .select('id, username, bio, keywords, avatar_url')
       .neq('id', session.user.id)
-      .or(`username.ilike.%${searchTerm}%,keywords.ilike.%${searchTerm}%,bio.ilike.%${searchTerm}%`);
+      .or(`username.ilike.%${safe}%,keywords.ilike.%${safe}%,bio.ilike.%${safe}%`);
 
     if (error) {
       console.error(error);
@@ -104,10 +105,10 @@ export default function Discovery({ session }) {
                 color: 'var(--primary-color)',
                 flexShrink: 0
               }}>
-                {!profile.avatar_url && (profile.username || profile.email || '?')[0].toUpperCase()}
+                {!profile.avatar_url && (profile.username || '?')[0].toUpperCase()}
               </div>
               <div style={{ flexGrow: 1, minWidth: 0 }}>
-                <div style={{ fontWeight: '600', fontSize: '1rem' }}>{profile.username || profile.email?.split('@')[0]}</div>
+                <div style={{ fontWeight: '600', fontSize: '1rem' }}>{profile.username || 'Unknown'}</div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
                   {profile.keywords || profile.bio || 'No keywords set'}
                 </div>

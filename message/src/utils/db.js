@@ -1,7 +1,7 @@
 import { openDB } from 'idb';
 import { cryptoUtils, ENCRYPTION_PREFIX } from './crypto';
 
-const DB_NAME = 'ChatAppDB_v2_Secure'; // Renamed to ensure fresh start with encryption
+const DB_NAME = 'ChatAppDB_v3_E2E'; // v3: ECDH key exchange, clears v2 data encrypted with weak roomId key
 const STORE_NAME = 'messages';
 
 let dbPromise = null;
