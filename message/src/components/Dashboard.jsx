@@ -31,8 +31,8 @@ export default function Dashboard({ session }) {
       .from('connections')
       .select(`
         id, status, requester_id, receiver_id,
-        requester:profiles!connections_requester_id_fkey(id, bio, username, email, keywords, avatar_url),
-        receiver:profiles!connections_receiver_id_fkey(id, bio, username, email, keywords, avatar_url)
+        requester:profiles!connections_requester_id_fkey(id, bio, username, keywords, avatar_url),
+        receiver:profiles!connections_receiver_id_fkey(id, bio, username, keywords, avatar_url)
       `)
       .or(`requester_id.eq.${session.user.id},receiver_id.eq.${session.user.id}`);
       
@@ -89,9 +89,8 @@ export default function Dashboard({ session }) {
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
           <div style={{ display: 'flex', flexDirection: 'column' }}>
             <h1 style={{ margin: 0, fontSize: '1.4rem', fontWeight: '800' }}>
-              {userProfile?.username || session.user.email.split('@')[0]}
+              {userProfile?.username || 'Me'}
             </h1>
-            <span style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>{session.user.email}</span>
           </div>
           <div style={{ display: 'flex', gap: '0.8rem', alignItems: 'center' }}>
             <button onClick={handleLogout} style={{ 
@@ -179,12 +178,12 @@ export default function Dashboard({ session }) {
                     fontWeight: 'bold',
                     color: 'var(--primary-color)'
                   }}>
-                    {!otherPerson?.avatar_url && (otherPerson?.username || otherPerson?.email || '?')[0].toUpperCase()}
+                    {!otherPerson?.avatar_url && (otherPerson?.username || '?')[0].toUpperCase()}
                   </div>
                   <div style={{ flexGrow: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
                       <div style={{ fontWeight: '600', fontSize: '1.05rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-                        {otherPerson?.username || otherPerson?.email?.split('@')[0] || 'Friend'}
+                        {otherPerson?.username || 'Friend'}
                       </div>
                       <div style={{ fontSize: '0.75rem', color: 'var(--text-muted)' }}>
                         Now

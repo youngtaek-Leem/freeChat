@@ -9,149 +9,179 @@ export const ChatProvider = ({ children }) => {
   const [unreadCounts, setUnreadCounts] = useState({});
   const [session, setSession] = useState(null);
   const activeRoomRef = useRef(null);
+  const privateKeyRef = useRef(null);
+  const publicKeyCacheRef = useRef(new Map()); // userId → CryptoKey (public)
 
   useEffect(() => {
-    console.log("ChatProvider: Initializing auth...");
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      console.log("ChatProvider: Session loaded", session?.user?.id);
-      setSession(session);
-    });
-
+    supabase.auth.getSession().then(({ data: { session } }) => setSession(session));
     const { data: { subscription } } = supabase.auth.onAuthStateChange((_event, session) => {
       setSession(session);
     });
-
     return () => subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
-    if (!session) {
-      console.log("ChatProvider: No session, skipping realtime init");
-      return;
-    }
-
-    console.log("ChatProvider: Starting realtime and sync for", session.user.id);
-    
-    // Sync offline messages from server
-    syncOfflineMessages(session.user.id);
-
-    dbUtils.getUnreadCounts()
-      .then(counts => {
-        console.log("ChatProvider: Unread counts loaded", counts);
-        setUnreadCounts(counts);
-      })
-      .catch(err => console.error("Initial unread load failed:", err));
+    if (!session) return;
 
     const myId = session.user.id;
-    const channel = supabase.channel(`user:${myId}`, {
-      config: { broadcast: { self: false } }
-    });
+    let channel = null;
+    let cancelled = false;
 
-    channel
-      .on('broadcast', { event: '*' }, async (eventPayload) => {
-        const { event, payload } = eventPayload;
-        
-        if (event === 'message') {
-          const { sender, encryptedText, roomId, messageId, timestamp } = payload;
-          try {
-            const isRead = activeRoomRef.current === roomId;
-            const key = await cryptoUtils.getDerivedKey(roomId);
-            const decryptedText = await cryptoUtils.decrypt(encryptedText, key);
-            
-            const newMessage = { 
-              messageId, roomId, sender, text: decryptedText, timestamp, 
-              read: isRead
-            };
+    // ── helpers ──────────────────────────────────────────────────────────────
 
-            await dbUtils.saveMessage(newMessage);
-            if (!isRead) {
-              const counts = await dbUtils.getUnreadCounts();
-              setUnreadCounts(counts);
+    const getPublicKey = async (userId) => {
+      if (publicKeyCacheRef.current.has(userId)) return publicKeyCacheRef.current.get(userId);
+      const { data } = await supabase
+        .from('profiles').select('public_key').eq('id', userId).single();
+      if (!data?.public_key) return null;
+      try {
+        const key = await cryptoUtils.importPublicKey(data.public_key);
+        publicKeyCacheRef.current.set(userId, key);
+        return key;
+      } catch { return null; }
+    };
+
+    const getKeysForRoom = async (roomId) => {
+      if (!privateKeyRef.current) return null;
+      const friendId = roomId.split('_').find(id => id !== myId);
+      if (!friendId) return null;
+      const friendPubKey = await getPublicKey(friendId);
+      if (!friendPubKey) return null;
+      return cryptoUtils.deriveRoomKeys(privateKeyRef.current, friendPubKey);
+    };
+
+    // ── main init ────────────────────────────────────────────────────────────
+
+    const run = async () => {
+      // 1. Init ECDH key pair
+      let privateKey = await dbUtils.getSecret('ecdh_private_key');
+      if (!privateKey) {
+        const keyPair = await cryptoUtils.generateKeyPair();
+        privateKey = keyPair.privateKey;
+        const jwk = await cryptoUtils.exportPublicKey(keyPair.publicKey);
+        await dbUtils.saveSecret('ecdh_private_key', privateKey);
+        await dbUtils.saveSecret('ecdh_public_key_jwk', jwk);
+        const { error } = await supabase.from('profiles').upsert({ id: myId, public_key: jwk });
+        if (error) console.warn('[Auth] public_key upload failed — run SQL migration:', error.message);
+      } else {
+        // Re-upload on every login to keep Supabase in sync
+        const jwk = await dbUtils.getSecret('ecdh_public_key_jwk');
+        if (jwk) await supabase.from('profiles').upsert({ id: myId, public_key: jwk });
+      }
+      if (cancelled) return;
+      privateKeyRef.current = privateKey;
+
+      // 2. Load unread counts
+      const counts = await dbUtils.getUnreadCounts();
+      if (!cancelled) setUnreadCounts(counts);
+
+      // 3. Sync offline pending messages
+      try {
+        const { data, error } = await supabase
+          .from('pending_messages').select('*').eq('receiver_id', myId);
+        if (!error && data?.length > 0) {
+          for (const msg of data) {
+            try {
+              const friendPubKey = await getPublicKey(msg.sender_id);
+              if (!friendPubKey) continue;
+              const { encKey } = await cryptoUtils.deriveRoomKeys(privateKey, friendPubKey);
+              const text = await cryptoUtils.decrypt(msg.encrypted_payload, encKey);
+              await dbUtils.saveMessage({
+                messageId: msg.message_id,
+                roomId: msg.room_id,
+                sender: msg.sender_id,
+                text,
+                timestamp: msg.timestamp,
+                read: activeRoomRef.current === msg.room_id,
+              });
+            } catch (e) {
+              console.error('Failed to sync message:', e);
             }
-          } catch (e) {
-            console.error("Background message error:", e);
           }
-        } else if (event === 'delete_message') {
-          const messageId = payload.messageId || payload;
-          if (messageId && typeof messageId === 'string') {
-            await dbUtils.deleteMessage(messageId);
-            const counts = await dbUtils.getUnreadCounts();
-            setUnreadCounts(counts);
-          }
-        } else if (event === 'clear_chat') {
-          const { roomId } = payload;
-          await dbUtils.clearRoomMessages(roomId);
-          const counts = await dbUtils.getUnreadCounts();
-          setUnreadCounts(counts);
+          await supabase.from('pending_messages').delete().in('id', data.map(m => m.id));
+          if (!cancelled) setUnreadCounts(await dbUtils.getUnreadCounts());
         }
-      })
-      .subscribe((status) => {
-        console.log(`ChatProvider: Subscription status for user:${myId}:`, status);
+      } catch (e) {
+        console.error('Offline sync failed:', e);
+      }
+
+      if (cancelled) return;
+
+      // 4. Subscribe to personal broadcast channel
+      channel = supabase.channel(`user:${myId}`, {
+        config: { broadcast: { self: false } },
       });
 
+      channel.on('broadcast', { event: '*' }, async (eventPayload) => {
+        const { event, payload } = eventPayload;
+
+        if (event === 'message') {
+          const { sender, encryptedText, roomId, messageId, timestamp, sig } = payload;
+          if (!sig || !sender || !roomId) return;
+          // Sender must be the room's other participant
+          if (sender !== roomId.split('_').find(id => id !== myId)) return;
+
+          try {
+            const keys = await getKeysForRoom(roomId);
+            if (!keys) return;
+            if (!await cryptoUtils.verify(keys.sigKey, { sender, roomId, messageId, timestamp }, sig)) return;
+            const text = await cryptoUtils.decrypt(encryptedText, keys.encKey);
+            const isRead = activeRoomRef.current === roomId;
+            await dbUtils.saveMessage({ messageId, roomId, sender, text, timestamp, read: isRead });
+            if (!isRead) setUnreadCounts(await dbUtils.getUnreadCounts());
+          } catch (e) {
+            console.error('Background message error:', e);
+          }
+
+        } else if (event === 'delete_message') {
+          const { messageId, sender, roomId, sig } = payload;
+          if (!messageId || !sender || !roomId || !sig) return;
+          if (sender !== roomId.split('_').find(id => id !== myId)) return;
+
+          try {
+            const keys = await getKeysForRoom(roomId);
+            if (!keys) return;
+            if (!await cryptoUtils.verify(keys.sigKey, { sender, roomId, messageId }, sig)) return;
+            await dbUtils.deleteMessage(messageId);
+            setUnreadCounts(await dbUtils.getUnreadCounts());
+          } catch (e) {
+            console.error('Background delete error:', e);
+          }
+
+        } else if (event === 'clear_chat') {
+          const { roomId, sender, sig } = payload;
+          if (!roomId || !sender || !sig) return;
+          if (sender !== roomId.split('_').find(id => id !== myId)) return;
+
+          try {
+            const keys = await getKeysForRoom(roomId);
+            if (!keys) return;
+            if (!await cryptoUtils.verify(keys.sigKey, { sender, roomId }, sig)) return;
+            await dbUtils.clearRoomMessages(roomId);
+            setUnreadCounts(await dbUtils.getUnreadCounts());
+          } catch (e) {
+            console.error('Background clear error:', e);
+          }
+        }
+      }).subscribe();
+    };
+
+    run();
+
     return () => {
-      supabase.removeChannel(channel);
+      cancelled = true;
+      if (channel) supabase.removeChannel(channel);
     };
   }, [session]);
 
-  const syncOfflineMessages = async (myId) => {
-    try {
-      console.log("ChatProvider: Syncing offline messages...");
-      const { data, error } = await supabase
-        .from('pending_messages')
-        .select('*')
-        .eq('receiver_id', myId);
-
-      if (error) throw error;
-      if (!data || data.length === 0) return;
-
-      for (const msg of data) {
-        try {
-          const sharedSecret = msg.room_id;
-          const key = await cryptoUtils.getDerivedKey(sharedSecret);
-          const decryptedText = await cryptoUtils.decrypt(msg.encrypted_payload, key);
-
-          const newMessage = {
-            messageId: msg.message_id,
-            roomId: msg.room_id,
-            sender: msg.sender_id,
-            text: decryptedText,
-            timestamp: msg.timestamp,
-            read: activeRoomRef.current === msg.room_id
-          };
-
-          await dbUtils.saveMessage(newMessage);
-        } catch (e) {
-          console.error("Failed to sync individual message:", e);
-        }
-      }
-
-      // Clear the postbox after successful sync
-      const idsToDelete = data.map(m => m.id);
-      await supabase.from('pending_messages').delete().in('id', idsToDelete);
-      
-      console.log(`ChatProvider: Synced ${data.length} messages.`);
-      const counts = await dbUtils.getUnreadCounts();
-      setUnreadCounts(counts);
-    } catch (e) {
-      console.error("Offline sync failed:", e);
-    }
-  };
-
   const markAsRead = async (roomId) => {
     await dbUtils.markRoomAsRead(roomId);
-    setUnreadCounts(prev => {
-      const next = { ...prev };
-      delete next[roomId];
-      return next;
-    });
+    setUnreadCounts(prev => { const n = { ...prev }; delete n[roomId]; return n; });
   };
 
   const setActiveRoom = (roomId) => {
     activeRoomRef.current = roomId;
-    if (roomId) {
-      markAsRead(roomId);
-    }
+    if (roomId) markAsRead(roomId);
   };
 
   return (
