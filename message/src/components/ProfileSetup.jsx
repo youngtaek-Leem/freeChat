@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { supabase } from '../supabaseClient';
+import { dbUtils } from '../utils/db';
 import { useNavigate } from 'react-router-dom';
 
 export default function ProfileSetup({ session }) {
@@ -44,6 +45,30 @@ export default function ProfileSetup({ session }) {
       document.documentElement.style.setProperty('--primary-hover', themeColor + 'dd');
     }
   }, [themeColor]);
+
+  const handleDeleteAccount = async () => {
+    const confirmed = window.confirm(
+      '정말 계정을 삭제하시겠습니까?\n\n채팅 기록과 모든 정보가 영구적으로 삭제되며 복구할 수 없습니다.'
+    );
+    if (!confirmed) return;
+
+    setLoading(true);
+    try {
+      // 로컬 IndexedDB 전체 삭제
+      const db = await dbUtils.initDB();
+      await db.clear('messages');
+      await db.clear('secrets');
+
+      // 서버 데이터 삭제 (connections, pending_messages, profiles, auth.users)
+      const { error } = await supabase.rpc('delete_user_account');
+      if (error) throw error;
+
+      await supabase.auth.signOut();
+    } catch (err) {
+      alert('계정 삭제 중 오류가 발생했습니다: ' + err.message);
+      setLoading(false);
+    }
+  };
 
   const updateProfile = async (e) => {
     e.preventDefault();
@@ -165,17 +190,40 @@ export default function ProfileSetup({ session }) {
               <button className="btn" type="submit" disabled={loading}>
                 {loading ? '저장 중...' : '저장'}
               </button>
-              <button 
-                type="button" 
+              <button
+                type="button"
                 onClick={() => navigate('/dashboard')}
-                className="btn" 
-                style={{ 
-                  backgroundColor: 'rgba(255,255,255,0.05)', 
+                className="btn"
+                style={{
+                  backgroundColor: 'rgba(255,255,255,0.05)',
                   color: 'var(--text-main)',
                   border: '1px solid rgba(255,255,255,0.1)'
                 }}
               >
                 취소
+              </button>
+            </div>
+
+            <div style={{ marginTop: '2rem', paddingTop: '2rem', borderTop: '1px solid rgba(255,255,255,0.07)' }}>
+              <p style={{ fontSize: '0.8rem', color: 'var(--text-muted)', marginBottom: '1rem' }}>
+                계정을 삭제하면 채팅 기록과 모든 데이터가 영구적으로 삭제됩니다.
+              </p>
+              <button
+                type="button"
+                onClick={handleDeleteAccount}
+                disabled={loading}
+                style={{
+                  width: '100%',
+                  padding: '0.8rem',
+                  backgroundColor: 'rgba(239, 68, 68, 0.1)',
+                  color: '#ef4444',
+                  border: '1px solid rgba(239, 68, 68, 0.3)',
+                  borderRadius: '12px',
+                  fontSize: '0.95rem',
+                  cursor: 'pointer',
+                }}
+              >
+                계정 삭제
               </button>
             </div>
           </form>
