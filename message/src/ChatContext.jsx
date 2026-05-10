@@ -80,6 +80,7 @@ export const ChatProvider = ({ children }) => {
         const { data, error } = await supabase
           .from('pending_messages').select('*').eq('receiver_id', myId);
         if (!error && data?.length > 0) {
+          const successfulIds = [];
           for (const msg of data) {
             try {
               const friendPubKey = await getPublicKey(msg.sender_id);
@@ -94,11 +95,14 @@ export const ChatProvider = ({ children }) => {
                 timestamp: msg.timestamp,
                 read: activeRoomRef.current === msg.room_id,
               });
+              successfulIds.push(msg.id);
             } catch (e) {
               console.error('Failed to sync message:', e);
             }
           }
-          await supabase.from('pending_messages').delete().in('id', data.map(m => m.id));
+          if (successfulIds.length > 0) {
+            await supabase.from('pending_messages').delete().in('id', successfulIds);
+          }
           if (!cancelled) setUnreadCounts(await dbUtils.getUnreadCounts());
         }
       } catch (e) {
