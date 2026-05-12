@@ -83,30 +83,23 @@ export default function Discovery({ session }) {
           </div>
         ) : (
           results.map((profile) => (
-            <div key={profile.id} style={{ 
-              display: 'flex', 
-              alignItems: 'center', 
-              gap: '1rem', 
+            <div key={profile.id} style={{
+              display: 'flex',
+              alignItems: 'center',
+              gap: '1rem',
               padding: '1rem 0',
               borderBottom: '1px solid rgba(255,255,255,0.03)'
             }}>
-              <div style={{ 
-                width: '50px', 
-                height: '50px', 
-                borderRadius: '18px', 
+              <div style={{
+                width: '57px',
+                height: '57px',
+                borderRadius: '18px',
                 backgroundColor: 'var(--surface-color)',
-                backgroundImage: profile.avatar_url ? `url(${profile.avatar_url})` : 'none',
-                backgroundSize: 'cover',
-                display: 'flex',
-                alignItems: 'center',
-                justifyContent: 'center',
-                fontSize: '1.2rem',
-                fontWeight: 'bold',
-                color: 'var(--primary-color)',
+                backgroundImage: `url(${profile.avatar_url || `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(profile.username || profile.id)}`})`,
+                backgroundSize: '58px 58px',
+                backgroundPosition: 'center 30%',
                 flexShrink: 0
-              }}>
-                {!profile.avatar_url && (profile.username || '?')[0].toUpperCase()}
-              </div>
+              }} />
               <div style={{ flexGrow: 1, minWidth: 0 }}>
                 <div style={{ fontWeight: '600', fontSize: '1rem' }}>{profile.username || 'Unknown'}</div>
                 <div style={{ fontSize: '0.8rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>

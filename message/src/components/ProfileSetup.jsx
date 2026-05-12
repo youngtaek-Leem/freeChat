@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useRef } from 'react';
 import { supabase } from '../supabaseClient';
 import { dbUtils } from '../utils/db';
 import { useNavigate } from 'react-router-dom';
@@ -10,6 +10,8 @@ export default function ProfileSetup({ session }) {
   const [themeColor, setThemeColor] = useState('#6366f1');
   const [keywords, setKeywords] = useState('');
   const [avatarUrl, setAvatarUrl] = useState(null);
+  const [avatarUploading, setAvatarUploading] = useState(false);
+  const fileInputRef = useRef(null);
   const navigate = useNavigate();
 
   useEffect(() => {
@@ -94,17 +96,89 @@ export default function ProfileSetup({ session }) {
     setLoading(false);
   };
 
+  const resizeToJpeg = (file) => new Promise((resolve) => {
+    const img = new Image();
+    const objectUrl = URL.createObjectURL(file);
+    img.onload = () => {
+      const canvas = document.createElement('canvas');
+      canvas.width = 200;
+      canvas.height = 200;
+      const ctx = canvas.getContext('2d');
+      const size = Math.min(img.width, img.height);
+      const sx = (img.width - size) / 2;
+      const sy = (img.height - size) / 2;
+      ctx.drawImage(img, sx, sy, size, size, 0, 0, 200, 200);
+      URL.revokeObjectURL(objectUrl);
+      canvas.toBlob(resolve, 'image/jpeg', 0.80);
+    };
+    img.src = objectUrl;
+  });
+
+  const handleAvatarReset = async () => {
+    if (!avatarUrl) return;
+    setAvatarUploading(true);
+    try {
+      await supabase.storage.from('avatars').remove([`${session.user.id}.jpg`]);
+      await supabase.from('profiles').update({ avatar_url: null }).eq('id', session.user.id);
+      setAvatarUrl(null);
+    } catch (err) {
+      alert('Reset failed: ' + err.message);
+    }
+    setAvatarUploading(false);
+  };
+
+  const handleAvatarChange = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+    setAvatarUploading(true);
+    try {
+      const blob = await resizeToJpeg(file);
+      const path = `${session.user.id}.jpg`;
+      const { error } = await supabase.storage.from('avatars').upload(path, blob, {
+        contentType: 'image/jpeg',
+        upsert: true,
+      });
+      if (error) throw error;
+      const { data } = supabase.storage.from('avatars').getPublicUrl(path);
+      // Add cache-busting param so browser reloads after re-upload
+      const url = data.publicUrl + '?t=' + Date.now();
+      setAvatarUrl(url);
+      await supabase.from('profiles').update({ avatar_url: url }).eq('id', session.user.id);
+    } catch (err) {
+      alert('Avatar upload failed: ' + err.message);
+    }
+    setAvatarUploading(false);
+  };
+
+  const dicebearUrl = `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(username || session.user.id)}`;
+  const displayAvatar = avatarUrl || dicebearUrl;
+
   return (
     <div className="container" style={{ display: 'flex', flexDirection: 'column', height: '100vh', padding: 0 }}>
       {/* Header */}
-      <header style={{ 
-        padding: '1.5rem 1rem 1rem 1rem', 
+      <header style={{
+        padding: '1.5rem 1rem 1rem 1rem',
         backgroundColor: 'color-mix(in srgb, var(--primary-color), white 75%)',
         backdropFilter: 'blur(20px)',
         WebkitBackdropFilter: 'blur(20px)',
         borderBottom: '2px solid var(--primary-color)'
       }}>
-        <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: '800' }}>Edit Profile</h1>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <h1 style={{ margin: 0, fontSize: '1.5rem', fontWeight: '800' }}>Edit Profile</h1>
+          <button
+            type="button"
+            onClick={async () => { await supabase.auth.signOut(); navigate('/'); }}
+            style={{
+              background: 'rgba(255,255,255,0.1)',
+              border: 'none',
+              color: 'var(--text-main)',
+              fontSize: '0.75rem',
+              padding: '4px 10px',
+              borderRadius: '12px',
+              cursor: 'pointer',
+            }}
+          >Logout</button>
+        </div>
       </header>
 
       <div style={{ padding: '1.5rem', flexGrow: 1, overflowY: 'auto', paddingBottom: '80px' }}>
@@ -112,6 +186,80 @@ export default function ProfileSetup({ session }) {
           <p style={{ fontSize: '0.9rem', marginBottom: '2rem' }}>Update your information to help friends find you easily.</p>
           
           <form onSubmit={updateProfile}>
+            {/* Avatar */}
+            <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'center', marginBottom: '2rem' }}>
+              <div
+                onClick={() => !avatarUploading && fileInputRef.current?.click()}
+                style={{
+                  width: '96px',
+                  height: '96px',
+                  borderRadius: '28px',
+                  backgroundImage: `url(${displayAvatar})`,
+                  backgroundSize: 'cover',
+                  backgroundPosition: 'center',
+                  backgroundColor: 'var(--surface-color)',
+                  cursor: avatarUploading ? 'default' : 'pointer',
+                  border: '2px solid var(--primary-color)',
+                  position: 'relative',
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'center',
+                }}
+              >
+                {avatarUploading && (
+                  <div style={{
+                    position: 'absolute', inset: 0, borderRadius: '26px',
+                    backgroundColor: 'rgba(0,0,0,0.5)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: '0.75rem', color: 'white'
+                  }}>...</div>
+                )}
+                {!avatarUploading && (
+                  <div style={{
+                    position: 'absolute', bottom: '-6px', right: '-6px',
+                    width: '26px', height: '26px', borderRadius: '50%',
+                    backgroundColor: 'var(--primary-color)',
+                    display: 'flex', alignItems: 'center', justifyContent: 'center',
+                    fontSize: '14px', color: 'white', border: '2px solid var(--bg-color)'
+                  }}>✎</div>
+                )}
+              </div>
+              <input
+                ref={fileInputRef}
+                type="file"
+                accept="image/*"
+                style={{ display: 'none' }}
+                onChange={handleAvatarChange}
+              />
+              <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', marginTop: '0.6rem' }}>
+                <p style={{ fontSize: '0.75rem', color: 'var(--text-muted)', margin: 0 }}>
+                  {avatarUrl ? 'Tap to change photo' : 'Tap to upload photo (auto-generated now)'}
+                </p>
+                {avatarUrl && !avatarUploading && (
+                  <button
+                    type="button"
+                    onClick={handleAvatarReset}
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--text-muted)',
+                      fontSize: '0.75rem',
+                      cursor: 'pointer',
+                      textDecoration: 'underline',
+                      padding: 0,
+                    }}
+                  >Reset</button>
+                )}
+              </div>
+            </div>
+
+            <div style={{ marginBottom: '1.5rem' }}>
+              <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem', marginLeft: '4px' }}>EMAIL</label>
+              <div className="input-field" style={{ marginBottom: 0, color: 'var(--text-muted)', pointerEvents: 'none' }}>
+                {session.user.email}
+              </div>
+            </div>
+
             <div style={{ marginBottom: '1.5rem' }}>
               <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem', marginLeft: '4px' }}>NICKNAME</label>
               <input
@@ -143,18 +291,6 @@ export default function ProfileSetup({ session }) {
                 onChange={(e) => setKeywords(e.target.value)}
                 className="input-field"
                 placeholder="e.g. coding, music, movies"
-                style={{ marginBottom: 0 }}
-              />
-            </div>
-
-            <div style={{ marginBottom: '1.5rem' }}>
-              <label style={{ display: 'block', fontSize: '0.75rem', color: 'var(--text-muted)', marginBottom: '0.5rem', marginLeft: '4px' }}>AVATAR IMAGE URL</label>
-              <input
-                type="text"
-                value={avatarUrl || ''}
-                onChange={(e) => setAvatarUrl(e.target.value)}
-                className="input-field"
-                placeholder="https://..."
                 style={{ marginBottom: 0 }}
               />
             </div>

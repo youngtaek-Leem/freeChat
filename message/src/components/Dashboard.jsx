@@ -59,11 +59,6 @@ export default function Dashboard({ session }) {
     }
   };
 
-  const handleLogout = async () => {
-    await supabase.auth.signOut();
-    navigate('/');
-  };
-
   const handleMessage = (friendId) => {
     const roomId = [myId, friendId].sort().join('_');
     navigate(`/chat/${roomId}`);
@@ -92,16 +87,7 @@ export default function Dashboard({ session }) {
               {userProfile?.username || 'Me'}
             </h1>
           </div>
-          <div style={{ display: 'flex', gap: '0.8rem', alignItems: 'center' }}>
-            <button onClick={handleLogout} style={{ 
-              background: 'rgba(255,255,255,0.1)', 
-              border: 'none', 
-              color: 'var(--text-main)', 
-              fontSize: '0.75rem',
-              padding: '4px 10px',
-              borderRadius: '12px'
-            }}>Logout</button>
-          </div>
+          <div />
         </div>
       </header>
 
@@ -146,40 +132,33 @@ export default function Dashboard({ session }) {
               if (!otherPerson) return null;
               const roomId = [myId, otherPerson.id].sort().join('_');
               const unreadCount = unreadCounts[roomId] || 0;
+              const dicebear = `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(otherPerson?.username || otherPerson?.id)}`;
+              const avatarSrc = otherPerson?.avatar_url || dicebear;
 
               return (
-                <Link 
-                  key={friend.id} 
+                <Link
+                  key={friend.id}
                   to={`/chat/${roomId}`}
-                  style={{ 
-                    display: 'flex', 
-                    alignItems: 'center', 
-                    gap: '1rem', 
+                  style={{
+                    display: 'flex',
+                    alignItems: 'center',
+                    gap: '1rem',
                     padding: '0.85rem 0',
                     textDecoration: 'none',
                     color: 'inherit',
                     borderBottom: '1px solid rgba(255,255,255,0.03)'
                   }}
                 >
-                  <div style={{ 
-                    width: '54px', 
-                    height: '54px', 
-                    borderRadius: '20px', 
+                  <div style={{
+                    width: '61px',
+                    height: '61px',
+                    borderRadius: '20px',
                     backgroundColor: 'var(--surface-color)',
-                    backgroundImage: `url(${otherPerson?.avatar_url || ''})`,
-                    backgroundSize: 'cover',
-                    backgroundPosition: 'center',
-                    border: '1px solid rgba(255,255,255,0.05)',
+                    backgroundImage: `url(${avatarSrc})`,
+                    backgroundSize: '63px 63px',
+                    backgroundPosition: 'center 30%',
                     flexShrink: 0,
-                    display: 'flex',
-                    alignItems: 'center',
-                    justifyContent: 'center',
-                    fontSize: '1.2rem',
-                    fontWeight: 'bold',
-                    color: 'var(--primary-color)'
-                  }}>
-                    {!otherPerson?.avatar_url && (otherPerson?.username || '?')[0].toUpperCase()}
-                  </div>
+                  }} />
                   <div style={{ flexGrow: 1, minWidth: 0 }}>
                     <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '3px' }}>
                       <div style={{ fontWeight: '600', fontSize: '1.05rem', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>

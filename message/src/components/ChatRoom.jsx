@@ -5,6 +5,149 @@ import { dbUtils } from '../utils/db';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useChat } from '../ChatContext';
 
+const IMG_PREFIX = '_img_:';
+const FILE_PREFIX = '_file_:';
+
+const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
+
+const extractStoragePath = (text) => {
+  if (text?.startsWith(IMG_PREFIX)) return text.substring(IMG_PREFIX.length);
+  if (text?.startsWith(FILE_PREFIX)) {
+    const content = text.substring(FILE_PREFIX.length);
+    return content.substring(0, content.indexOf('|'));
+  }
+  return null;
+};
+
+const saveFile = async (blob, fileName) => {
+  const file = new File([blob], fileName, { type: blob.type });
+  // 모바일에서만 Web Share API 사용 (데스크탑은 <a download>로 충분)
+  if (isMobile && navigator.canShare && navigator.canShare({ files: [file] })) {
+    try {
+      await navigator.share({ files: [file], title: fileName });
+    } catch (e) {
+      if (e.name !== 'AbortError') throw e;
+      // 사용자가 공유 시트를 취소한 경우 — 정상
+    }
+    return;
+  }
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement('a');
+  a.href = url;
+  a.download = fileName;
+  document.body.appendChild(a);
+  a.click();
+  document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+};
+
+const ReceivedImage = ({ filePath }) => {
+  const [state, setState] = useState('idle'); // idle | loading | loaded | expired
+  const [blobUrl, setBlobUrl] = useState(null);
+  const blobRef = useRef(null);
+
+  const handleView = async () => {
+    setState('loading');
+    try {
+      const { data, error } = await supabase.storage
+        .from('chat-images')
+        .createSignedUrl(filePath, 30);
+
+      if (error || !data?.signedUrl) { setState('expired'); return; }
+
+      const res = await fetch(data.signedUrl);
+      if (!res.ok) { setState('expired'); return; }
+
+      const blob = await res.blob();
+      blobRef.current = blob;
+      setBlobUrl(URL.createObjectURL(blob));
+      setState('loaded');
+
+      await supabase.storage.from('chat-images').remove([filePath]);
+    } catch {
+      setState('expired');
+    }
+  };
+
+  if (state === 'idle') return (
+    <button onClick={handleView} style={{
+      background: 'rgba(255,255,255,0.15)', border: '1px solid rgba(255,255,255,0.3)',
+      borderRadius: '10px', padding: '0.5rem 0.8rem', cursor: 'pointer',
+      color: 'inherit', fontSize: '0.9rem',
+    }}>📷 사진 보기</button>
+  );
+  if (state === 'loading') return <span style={{ opacity: 0.6 }}>불러오는 중...</span>;
+  if (state === 'expired') return <span style={{ opacity: 0.5 }}>📷 이미지 만료됨</span>;
+  return (
+    <div>
+      <img src={blobUrl} alt="received" style={{ maxWidth: '220px', borderRadius: '10px', display: 'block' }} />
+      <button onClick={() => saveFile(blobRef.current, 'photo.jpg')} style={{
+        marginTop: '0.4rem', background: 'rgba(255,255,255,0.2)', border: 'none',
+        borderRadius: '8px', padding: '4px 10px', cursor: 'pointer',
+        color: 'inherit', fontSize: '0.8rem',
+      }}>저장</button>
+    </div>
+  );
+};
+
+const ReceivedFile = ({ filePath, fileName }) => {
+  // idle → fetching → ready(blob in ref) → done | expired
+  const [state, setState] = useState('idle');
+  const blobRef = useRef(null);
+
+  // 1단계: 파일 fetch (gesture 불필요)
+  const handleFetch = async () => {
+    setState('fetching');
+    try {
+      const { data, error } = await supabase.storage
+        .from('chat-images')
+        .createSignedUrl(filePath, 60);
+      if (error || !data?.signedUrl) { setState('expired'); return; }
+
+      const res = await fetch(data.signedUrl);
+      if (!res.ok) { setState('expired'); return; }
+
+      blobRef.current = await res.blob();
+      setState('ready');
+      await supabase.storage.from('chat-images').remove([filePath]);
+    } catch {
+      setState('expired');
+    }
+  };
+
+  // 2단계: 저장 (fresh user gesture → navigator.share 안전)
+  const handleSave = async () => {
+    try {
+      await saveFile(blobRef.current, fileName);
+      setState('done');
+    } catch {
+      alert('저장에 실패했습니다.');
+    }
+  };
+
+  if (state === 'expired') return <span style={{ opacity: 0.5 }}>📎 파일 만료됨</span>;
+  return (
+    <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+      <span style={{ fontSize: '1.4rem' }}>📎</span>
+      <div style={{ minWidth: 0 }}>
+        <div style={{ fontSize: '0.85rem', fontWeight: '600', wordBreak: 'break-all' }}>{fileName}</div>
+        <button
+          onClick={state === 'ready' ? handleSave : state === 'idle' ? handleFetch : undefined}
+          disabled={state === 'fetching' || state === 'done'}
+          style={{
+            marginTop: '0.3rem', background: 'rgba(255,255,255,0.2)', border: 'none',
+            borderRadius: '8px', padding: '3px 10px',
+            cursor: (state === 'fetching' || state === 'done') ? 'default' : 'pointer',
+            color: 'inherit', fontSize: '0.8rem',
+          }}
+        >
+          {state === 'fetching' ? '불러오는 중...' : state === 'ready' ? '저장하기' : state === 'done' ? '저장 완료' : '다운로드'}
+        </button>
+      </div>
+    </div>
+  );
+};
+
 const ChatRoom = ({ session }) => {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -14,8 +157,11 @@ const ChatRoom = ({ session }) => {
   const [sigKey, setSigKey] = useState(null);
   const [friendProfile, setFriendProfile] = useState(null);
   const [keyError, setKeyError] = useState(null);
+  const [uploadProgress, setUploadProgress] = useState(null); // null | { done, total }
   const messagesEndRef = useRef(null);
   const channelRef = useRef(null);
+  const imageInputRef = useRef(null);
+  const fileInputRef = useRef(null);
   const { setActiveRoom, markAsRead } = useChat();
 
   const myId = session.user.id;
@@ -36,7 +182,7 @@ const ChatRoom = ({ session }) => {
 
       const { data } = await supabase
         .from('profiles')
-        .select('username, public_key')
+        .select('username, public_key, avatar_url')
         .eq('id', friendId)
         .single();
       setFriendProfile(data);
@@ -162,6 +308,127 @@ const ChatRoom = ({ session }) => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
+  const sendImage = async (file) => {
+    const ext = file.name.split('.').pop() || 'jpg';
+    const filePath = `${roomId}/${window.crypto.randomUUID()}.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('chat-images')
+      .upload(filePath, file, { contentType: file.type });
+    if (uploadError) throw uploadError;
+
+    const localImageUrl = URL.createObjectURL(file);
+    const messageText = `${IMG_PREFIX}${filePath}`;
+    const encryptedText = await cryptoUtils.encrypt(messageText, encKey);
+    const messageId = window.crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    const sender = myId;
+    const sig = await cryptoUtils.sign(sigKey, { sender, roomId, messageId, timestamp });
+
+    const broadcastPayload = {
+      type: 'broadcast', event: 'message',
+      payload: { sender, encryptedText, roomId, messageId, timestamp, sig },
+    };
+
+    const myMessage = { messageId, roomId, sender, text: messageText, timestamp, read: true, recipientRead: false, localImageUrl };
+    await dbUtils.saveMessage(myMessage);
+    setMessages(prev => [...prev, myMessage]);
+
+    if (channelRef.current) channelRef.current.send(broadcastPayload);
+    const userChannel = supabase.channel(`user:${friendId}`);
+    userChannel.subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        await userChannel.send(broadcastPayload);
+        setTimeout(() => supabase.removeChannel(userChannel), 1000);
+      }
+    });
+
+    await supabase.from('pending_messages').insert({
+      sender_id: sender, receiver_id: friendId,
+      room_id: roomId, encrypted_payload: encryptedText,
+      message_id: messageId, timestamp,
+    });
+  };
+
+  const sendFile = async (file) => {
+    const ext = file.name.split('.').pop() || 'bin';
+    const filePath = `files/${roomId}/${window.crypto.randomUUID()}.${ext}`;
+
+    const { error: uploadError } = await supabase.storage
+      .from('chat-images')
+      .upload(filePath, file, { contentType: file.type });
+    if (uploadError) throw uploadError;
+
+    const messageText = `${FILE_PREFIX}${filePath}|${file.name}`;
+    const encryptedText = await cryptoUtils.encrypt(messageText, encKey);
+    const messageId = window.crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    const sender = myId;
+    const sig = await cryptoUtils.sign(sigKey, { sender, roomId, messageId, timestamp });
+
+    const broadcastPayload = {
+      type: 'broadcast', event: 'message',
+      payload: { sender, encryptedText, roomId, messageId, timestamp, sig },
+    };
+
+    const myMessage = { messageId, roomId, sender, text: messageText, timestamp, read: true, recipientRead: false };
+    await dbUtils.saveMessage(myMessage);
+    setMessages(prev => [...prev, myMessage]);
+
+    if (channelRef.current) channelRef.current.send(broadcastPayload);
+    const userChannel = supabase.channel(`user:${friendId}`);
+    userChannel.subscribe(async (status) => {
+      if (status === 'SUBSCRIBED') {
+        await userChannel.send(broadcastPayload);
+        setTimeout(() => supabase.removeChannel(userChannel), 1000);
+      }
+    });
+
+    await supabase.from('pending_messages').insert({
+      sender_id: sender, receiver_id: friendId,
+      room_id: roomId, encrypted_payload: encryptedText,
+      message_id: messageId, timestamp,
+    });
+  };
+
+  const sendFiles = async (files) => {
+    if (!encKey || !sigKey || files.length === 0) return;
+    const limited = Array.from(files).slice(0, 10);
+    setUploadProgress({ done: 0, total: limited.length });
+    let failed = 0;
+    for (const file of limited) {
+      try {
+        await sendFile(file);
+      } catch (e) {
+        console.error('File send error:', e);
+        failed++;
+      }
+      setUploadProgress(prev => ({ ...prev, done: prev.done + 1 }));
+    }
+    setUploadProgress(null);
+    if (fileInputRef.current) fileInputRef.current.value = '';
+    if (failed > 0) alert(`${failed}개 파일 전송에 실패했습니다.`);
+  };
+
+  const sendImages = async (files) => {
+    if (!encKey || !sigKey || files.length === 0) return;
+    const limited = Array.from(files).slice(0, 10);
+    setUploadProgress({ done: 0, total: limited.length });
+    let failed = 0;
+    for (const file of limited) {
+      try {
+        await sendImage(file);
+      } catch (e) {
+        console.error('Image send error:', e);
+        failed++;
+      }
+      setUploadProgress(prev => ({ ...prev, done: prev.done + 1 }));
+    }
+    setUploadProgress(null);
+    if (imageInputRef.current) imageInputRef.current.value = '';
+    if (failed > 0) alert(`${failed}장 전송에 실패했습니다.`);
+  };
+
   const sendMessage = async (e) => {
     e.preventDefault();
     if (!input.trim() || !encKey || !sigKey) return;
@@ -213,8 +480,15 @@ const ChatRoom = ({ session }) => {
   const deleteMessage = async (messageId) => {
     if (!sigKey) return;
     try {
+      const msg = messages.find(m => m.messageId === messageId);
+      const storagePath = msg ? extractStoragePath(msg.text) : null;
+
       setMessages(prev => prev.filter(m => m.messageId !== messageId));
       await dbUtils.deleteMessage(messageId);
+
+      if (storagePath) {
+        await supabase.storage.from('chat-images').remove([storagePath]);
+      }
 
       const sender = myId;
       const sig = await cryptoUtils.sign(sigKey, { sender, roomId, messageId });
@@ -267,6 +541,11 @@ const ChatRoom = ({ session }) => {
       });
 
       await supabase.from('pending_messages').delete().eq('room_id', roomId);
+
+      const storagePaths = messages.map(m => extractStoragePath(m.text)).filter(Boolean);
+      if (storagePaths.length > 0) {
+        await supabase.storage.from('chat-images').remove(storagePaths);
+      }
     } catch (e) {
       console.error('Error clearing chat:', e);
     }
@@ -290,12 +569,20 @@ const ChatRoom = ({ session }) => {
           width: 'auto', padding: '5px 8px', fontSize: '1rem',
           margin: 0, color: 'var(--primary-color)',
         }}>〈 Back</Link>
-        <h2 style={{
-          margin: 0, fontSize: '1.1rem', fontWeight: '700',
-          whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis', maxWidth: '50%',
-        }}>
-          {friendProfile?.username || 'Loading...'}
-        </h2>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem', maxWidth: '50%', overflow: 'hidden' }}>
+          <div style={{
+            width: '41px', height: '41px', borderRadius: '10px', flexShrink: 0,
+            backgroundImage: `url(${friendProfile?.avatar_url || `https://api.dicebear.com/9.x/avataaars/svg?seed=${encodeURIComponent(friendProfile?.username || friendId)}`})`,
+            backgroundSize: '39px 39px', backgroundPosition: 'center 30%',
+            backgroundColor: 'var(--surface-color)',
+          }} />
+          <h2 style={{
+            margin: 0, fontSize: '1.1rem', fontWeight: '700',
+            whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis',
+          }}>
+            {friendProfile?.username || 'Loading...'}
+          </h2>
+        </div>
         <button onClick={clearChat} style={{
           background: 'none', border: 'none', color: '#ef4444',
           cursor: 'pointer', padding: '5px', fontSize: '1rem', opacity: 0.9, fontWeight: 'bold',
@@ -332,7 +619,27 @@ const ChatRoom = ({ session }) => {
               position: 'relative', boxShadow: '0 2px 5px rgba(0,0,0,0.1)',
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
-                <div style={{ fontSize: '0.95rem', lineHeight: '1.4' }}>{msg.text}</div>
+                <div style={{ fontSize: '0.95rem', lineHeight: '1.4' }}>
+                  {msg.text?.startsWith(IMG_PREFIX) ? (
+                    isMe ? (
+                      msg.localImageUrl
+                        ? <img src={msg.localImageUrl} alt="sent" style={{ maxWidth: '220px', borderRadius: '10px', display: 'block' }} onError={(e) => { e.target.replaceWith(Object.assign(document.createElement('span'), { textContent: '📷 사진 전송됨', style: 'opacity:0.6' })); }} />
+                        : <span style={{ opacity: 0.6 }}>📷 사진 전송됨</span>
+                    ) : (
+                      <ReceivedImage filePath={msg.text.substring(IMG_PREFIX.length)} />
+                    )
+                  ) : msg.text?.startsWith(FILE_PREFIX) ? (() => {
+                    const content = msg.text.substring(FILE_PREFIX.length);
+                    const sepIdx = content.indexOf('|');
+                    const filePath = content.substring(0, sepIdx);
+                    const fileName = content.substring(sepIdx + 1);
+                    return isMe
+                      ? <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><span style={{ fontSize: '1.4rem' }}>📎</span><span style={{ fontSize: '0.85rem', wordBreak: 'break-all' }}>{fileName}</span></div>
+                      : <ReceivedFile filePath={filePath} fileName={fileName} />;
+                  })() : (
+                    msg.text
+                  )}
+                </div>
                 {isMe && (
                   <button onClick={() => deleteMessage(msg.messageId)} style={{
                     background: 'none', border: 'none', color: 'rgba(255,255,255,0.4)',
@@ -368,6 +675,45 @@ const ChatRoom = ({ session }) => {
         borderTop: '2px solid var(--primary-color)',
       }}>
         <form onSubmit={sendMessage} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+          <input
+            ref={imageInputRef}
+            type="file"
+            accept="image/*"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => { if (e.target.files?.length) sendImages(e.target.files); }}
+          />
+          <input
+            ref={fileInputRef}
+            type="file"
+            multiple
+            style={{ display: 'none' }}
+            onChange={(e) => { if (e.target.files?.length) sendFiles(e.target.files); }}
+          />
+          <button
+            type="button"
+            onClick={() => imageInputRef.current?.click()}
+            disabled={!!keyError || !!uploadProgress}
+            style={{
+              width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
+              backgroundColor: 'rgba(255,255,255,0.1)', border: 'none', cursor: 'pointer',
+              fontSize: uploadProgress ? '0.7rem' : '1.2rem', flexShrink: 0, color: 'var(--text-main)',
+            }}
+          >
+            {uploadProgress ? `${uploadProgress.done}/${uploadProgress.total}` : '📷'}
+          </button>
+          <button
+            type="button"
+            onClick={() => fileInputRef.current?.click()}
+            disabled={!!keyError || !!uploadProgress}
+            style={{
+              width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
+              backgroundColor: 'rgba(255,255,255,0.1)', border: 'none', cursor: 'pointer',
+              fontSize: '1.2rem', flexShrink: 0, color: 'var(--text-main)',
+            }}
+          >
+            📎
+          </button>
           <input
             type="text" value={input}
             onChange={(e) => setInput(e.target.value)}
