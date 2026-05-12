@@ -5,3 +5,4 @@ dist/
 .vite/
 *.log
 PY_PDF/
+.claude/

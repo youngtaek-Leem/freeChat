@@ -81,10 +81,15 @@ export const ChatProvider = ({ children }) => {
           .from('pending_messages').select('*').eq('receiver_id', myId);
         if (!error && data?.length > 0) {
           const successfulIds = [];
+          const failedIds = [];
           for (const msg of data) {
             try {
               const friendPubKey = await getPublicKey(msg.sender_id);
-              if (!friendPubKey) continue;
+              if (!friendPubKey) {
+                // 발신자 public_key 없음 → 복호화 불가, 삭제
+                failedIds.push(msg.id);
+                continue;
+              }
               const { encKey } = await cryptoUtils.deriveRoomKeys(privateKey, friendPubKey);
               const text = await cryptoUtils.decrypt(msg.encrypted_payload, encKey);
               await dbUtils.saveMessage({
@@ -97,11 +102,14 @@ export const ChatProvider = ({ children }) => {
               });
               successfulIds.push(msg.id);
             } catch (e) {
-              console.error('Failed to sync message:', e);
+              console.error('Failed to sync message (key mismatch, removing):', e);
+              // 키 불일치로 복호화 불가 → 더 이상 재시도 불필요, 삭제
+              failedIds.push(msg.id);
             }
           }
-          if (successfulIds.length > 0) {
-            await supabase.from('pending_messages').delete().in('id', successfulIds);
+          const toDelete = [...successfulIds, ...failedIds];
+          if (toDelete.length > 0) {
+            await supabase.from('pending_messages').delete().in('id', toDelete);
           }
           if (!cancelled) setUnreadCounts(await dbUtils.getUnreadCounts());
         }

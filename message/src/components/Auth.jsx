@@ -36,23 +36,24 @@ export default function Auth() {
       <div style={{ width: '100%', textAlign: 'center' }}>
         {/* Branding Area */}
         <div style={{ marginBottom: '3rem' }}>
-          <div style={{ 
-            width: '70px', 
-            height: '70px', 
-            backgroundColor: 'var(--primary-color)', 
-            borderRadius: '22px', 
+          <div style={{
+            width: '70px',
+            height: '70px',
+            backgroundColor: 'var(--primary-color)',
+            borderRadius: '22px',
             margin: '0 auto 1.5rem auto',
             display: 'flex',
             alignItems: 'center',
             justifyContent: 'center',
-            fontSize: '2rem',
             boxShadow: '0 10px 25px rgba(99, 102, 241, 0.4)',
-            color: 'white'
+            color: 'white',
+            flexDirection: 'column',
+            lineHeight: 1.1,
           }}>
-            G
+            <span style={{ fontSize: '0.9rem', fontWeight: '700', letterSpacing: '0.02em' }}>Secured</span>
+            <span style={{ fontSize: '1rem', fontWeight: '800' }}>1:1</span>
           </div>
-          <h1 style={{ fontSize: '2.2rem', marginBottom: '0.5rem', fontWeight: '800' }}>Gemma</h1>
-          <p style={{ fontSize: '1rem', color: 'var(--text-muted)' }}>Secure E2E Messaging</p>
+          <h1 style={{ fontSize: '1.3rem', fontWeight: '800', margin: 0 }}>Secure E2E Messaging</h1>
         </div>
 
         <div className="glass-panel" style={{ textAlign: 'left', animation: 'fadeIn 0.5s ease-out' }}>
