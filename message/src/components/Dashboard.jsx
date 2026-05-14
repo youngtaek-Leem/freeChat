@@ -3,6 +3,30 @@ import { supabase } from '../supabaseClient';
 import { useNavigate, Link } from 'react-router-dom';
 import { useChat } from '../ChatContext';
 
+const AI_AGENT_ENTRY = (
+  <Link
+    to="/agent"
+    style={{
+      display: 'flex', alignItems: 'center', gap: '1rem',
+      padding: '0.85rem 0', textDecoration: 'none', color: 'inherit',
+      borderBottom: '1px solid rgba(255,255,255,0.06)',
+    }}
+  >
+    <div style={{
+      width: '61px', height: '61px', borderRadius: '20px', flexShrink: 0,
+      background: 'linear-gradient(135deg, #6366f1, #8b5cf6)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center',
+      fontSize: '1.8rem',
+    }}>🤖</div>
+    <div style={{ flexGrow: 1, minWidth: 0 }}>
+      <div style={{ fontWeight: '700', fontSize: '1.05rem' }}>AI Agent</div>
+      <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
+        gemma4 로컬 AI — 파일·앱·웹 제어
+      </div>
+    </div>
+  </Link>
+);
+
 export default function Dashboard({ session }) {
   const navigate = useNavigate();
    const [connections, setConnections] = useState([]);
@@ -121,6 +145,7 @@ export default function Dashboard({ session }) {
         </h3>
         
         <div style={{ display: 'flex', flexDirection: 'column' }}>
+          {AI_AGENT_ENTRY}
           {myFriends.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '3rem 1rem', opacity: 0.5 }}>
               <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>💬</div>

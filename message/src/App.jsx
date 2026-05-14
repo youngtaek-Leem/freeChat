@@ -6,6 +6,7 @@ import ProfileSetup from './components/ProfileSetup';
 import Dashboard from './components/Dashboard';
 import Discovery from './components/Discovery';
 import ChatRoom from './components/ChatRoom';
+import AgentChatRoom from './components/AgentChatRoom';
 import Navigation from './components/Navigation';
 import { ChatProvider } from './ChatContext';
 
@@ -55,6 +56,7 @@ function App() {
           <Route path="/dashboard" element={session ? <Dashboard session={session} /> : <Navigate to="/" />} />
           <Route path="/discovery" element={session ? <Discovery session={session} /> : <Navigate to="/" />} />
           <Route path="/chat/:roomId" element={session ? <ChatRoom session={session} /> : <Navigate to="/" />} />
+          <Route path="/agent" element={session ? <AgentChatRoom /> : <Navigate to="/" />} />
         </Routes>
       </Router>
     </ChatProvider>
