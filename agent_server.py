@@ -160,15 +160,14 @@ RISK = {
     "open_url": "low",
     "write_file": "medium",
     "control_app": "medium",
-    "execute_shell": "high",
+    "execute_shell": "medium",
     "delete_file": "high",
 }
 
 
 def get_risk(tool_name: str, args: dict, workspace: "Path | None") -> str:
-    """Within workspace, file ops are auto-approved (no confirmation)."""
     base = RISK.get(tool_name, "medium")
-    if workspace and tool_name in ("write_file", "delete_file", "read_file", "list_files"):
+    if workspace and tool_name in ("write_file", "read_file", "list_files"):
         try:
             path = expand(args.get("path", ""), workspace)
             if str(path).startswith(str(workspace)):
@@ -508,18 +507,33 @@ async def ws_endpoint(websocket: WebSocket):
                             "name": tool_name,
                             "args": tool_args,
                         })
-                        # Wait for confirm response (ignore unrelated messages)
+                        # Wait for confirm response with 120s timeout
                         approved = False
-                        while True:
-                            confirm_data = await incoming.get()
-                            if confirm_data is None:
-                                break
-                            if confirm_data.get("type") == "confirm" and confirm_data.get("tool_call_id") == tool_id:
-                                approved = confirm_data.get("approved", False)
-                                break
+                        pending = []
+                        try:
+                            deadline = asyncio.get_event_loop().time() + 120
+                            while True:
+                                remaining = deadline - asyncio.get_event_loop().time()
+                                if remaining <= 0:
+                                    break
+                                try:
+                                    confirm_data = await asyncio.wait_for(incoming.get(), timeout=remaining)
+                                except asyncio.TimeoutError:
+                                    break
+                                if confirm_data is None:
+                                    await incoming.put(None)  # propagate disconnect signal
+                                    break
+                                if confirm_data.get("type") == "confirm" and confirm_data.get("tool_call_id") == tool_id:
+                                    approved = confirm_data.get("approved", False)
+                                    break
+                                # preserve non-confirm messages for later processing
+                                pending.append(confirm_data)
+                        finally:
+                            for msg in pending:
+                                await incoming.put(msg)
 
                         if not approved:
-                            result = "Cancelled by user."
+                            result = "Cancelled by user." if not pending else "Timed out waiting for approval."
                             await websocket.send_json({"type": "tool_result", "id": tool_id, "name": tool_name, "result": result, "success": False})
                             tool_results.append({"role": "tool", "content": result})
                             continue

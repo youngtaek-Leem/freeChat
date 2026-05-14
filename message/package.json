@@ -5,6 +5,7 @@
   "main": "index.js",
   "scripts": {
     "dev": "vite",
+    "dev:all": "bash -c 'cd .. && bash start_agent.sh &' && vite",
     "build": "vite build",
     "preview": "vite preview",
     "deploy": "gh-pages -d dist"
