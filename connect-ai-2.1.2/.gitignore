@@ -1,6 +1,0 @@
-node_modules/
-out/
-*.vsix
-.vscode-test/
-preview.html
-.DS_Store
