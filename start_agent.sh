@@ -1,8 +1,9 @@
 #!/bin/bash
-# AI Agent Server 시작 스크립트 (macOS / Linux)
+# AI Agent + React 통합 시작 스크립트 (macOS / Linux)
 #
 # 기본 모델: gemma4:31b-cloud
 # 모델 변경: OLLAMA_MODEL=gemma4:e4b ./start_agent.sh
+# Agent 서버만 시작: AGENT_ONLY=1 ./start_agent.sh
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 cd "$SCRIPT_DIR"
@@ -25,7 +26,6 @@ if ! curl -s http://localhost:11434/api/tags > /dev/null 2>&1; then
   sleep 3
 fi
 
-# 사용 모델 표시
 OLLAMA_MODEL="${OLLAMA_MODEL:-gemma4:31b-cloud}"
 
 echo ""
@@ -35,4 +35,26 @@ echo "종료하려면 Ctrl+C"
 echo ""
 
 export OLLAMA_MODEL
-python3 agent_server.py
+
+# Agent 서버 백그라운드 실행
+python3 agent_server.py &
+AGENT_PID=$!
+
+# React dev 서버 실행 (AGENT_ONLY=1 이면 생략)
+if [ -z "$AGENT_ONLY" ] && [ -d "$SCRIPT_DIR/message" ]; then
+  echo "React dev 서버 시작: http://localhost:5173"
+  echo ""
+  cd "$SCRIPT_DIR/message"
+  if [ ! -d "node_modules" ]; then
+    echo "패키지 설치 중..."
+    npm install --silent
+  fi
+  npm run dev &
+  VITE_PID=$!
+  cd "$SCRIPT_DIR"
+fi
+
+# Ctrl+C 시 두 프로세스 모두 종료
+trap "kill $AGENT_PID $VITE_PID 2>/dev/null; exit" INT TERM
+
+wait $AGENT_PID

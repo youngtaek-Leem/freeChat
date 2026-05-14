@@ -375,7 +375,8 @@ export default function AgentChatRoom() {
   }, []);
 
   const connect = useCallback(() => {
-    if (wsRef.current?.readyState === WebSocket.OPEN) return;
+    const state = wsRef.current?.readyState;
+    if (state === WebSocket.OPEN || state === WebSocket.CONNECTING) return;
 
     const ws = new WebSocket(AGENT_URL);
     wsRef.current = ws;
@@ -392,7 +393,7 @@ export default function AgentChatRoom() {
     };
 
     ws.onerror = () => {
-      ws.close();
+      // onerror 후 onclose가 자동으로 호출되므로 별도 close() 불필요
     };
 
     ws.onmessage = (e) => {
