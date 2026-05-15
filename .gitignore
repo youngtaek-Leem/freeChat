@@ -7,3 +7,4 @@ dist/
 PY_PDF/
 .claude/
 .venv/
+__pycache__
