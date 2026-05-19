@@ -21,7 +21,7 @@ const AI_AGENT_ENTRY = (
     <div style={{ flexGrow: 1, minWidth: 0 }}>
       <div style={{ fontWeight: '700', fontSize: '1.05rem' }}>AI Agent</div>
       <div style={{ fontSize: '0.85rem', color: 'var(--text-muted)', whiteSpace: 'nowrap', overflow: 'hidden', textOverflow: 'ellipsis' }}>
-        gemma4 로컬 AI — 파일·앱·웹 제어
+        Gemini AI — 파일·앱·웹 제어
       </div>
     </div>
   </Link>

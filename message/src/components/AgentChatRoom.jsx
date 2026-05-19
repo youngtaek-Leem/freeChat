@@ -7,6 +7,35 @@ const AGENT_URL = 'ws://localhost:3001/ws';
 const STATUS_URL = 'http://localhost:3001/status';
 const BROWSE_URL = 'http://localhost:3001/browse';
 const MKDIR_URL = 'http://localhost:3001/mkdir';
+const GRANT_URL = 'http://localhost:3001/grant_automation';
+const TARGETS_URL = 'http://localhost:3001/automation_targets';
+
+const LATEX_MAP = [
+  [/\$\\rightarrow\$/g, '→'],
+  [/\$\\leftarrow\$/g, '←'],
+  [/\$\\Rightarrow\$/g, '⇒'],
+  [/\$\\Leftarrow\$/g, '⇐'],
+  [/\$\\leftrightarrow\$/g, '↔'],
+  [/\$\\uparrow\$/g, '↑'],
+  [/\$\\downarrow\$/g, '↓'],
+  [/\$\\times\$/g, '×'],
+  [/\$\\div\$/g, '÷'],
+  [/\$\\pm\$/g, '±'],
+  [/\$\\geq\$/g, '≥'],
+  [/\$\\leq\$/g, '≤'],
+  [/\$\\neq\$/g, '≠'],
+  [/\$\\approx\$/g, '≈'],
+  [/\$\\infty\$/g, '∞'],
+  [/\$\\cdot\$/g, '·'],
+  [/\$\\ldots\$/g, '…'],
+  [/\$\\sqrt\{([^}]+)\}\$/g, '√($1)'],
+  [/\$([^$]+)\$/g, '$1'],  // strip remaining inline $ wrappers
+];
+
+function deLatex(text) {
+  if (!text) return text;
+  return LATEX_MAP.reduce((s, [re, rep]) => s.replace(re, rep), text);
+}
 
 const TOOL_LABELS = {
   list_files: '📁 파일 목록',
@@ -30,6 +59,85 @@ const RISK_BORDER = {
   medium: 'rgba(234,179,8,0.4)',
   high: 'rgba(239,68,68,0.4)',
 };
+
+function AutomationGrantPanel({ onClose }) {
+  const APPS = ['Finder','Safari','Mail','Calendar','Reminders','Notes','Music','Messages','System Events'];
+  const [statuses, setStatuses] = React.useState({});
+  const [granting, setGranting] = React.useState(null);
+
+  const grant = async (app) => {
+    setGranting(app);
+    try {
+      const r = await fetch(GRANT_URL, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ app }),
+      });
+      const data = await r.json();
+      setStatuses(prev => ({ ...prev, [app]: data.status }));
+    } catch {
+      setStatuses(prev => ({ ...prev, [app]: 'error' }));
+    }
+    setGranting(null);
+  };
+
+  const grantAll = async () => {
+    for (const app of APPS) {
+      await grant(app);
+      await new Promise(r => setTimeout(r, 800));
+    }
+  };
+
+  const statusIcon = (s) => s === 'granted' ? '✅' : s === 'denied' ? '❌' : s === 'triggered' ? '⏳' : s === 'error' ? '⚠️' : '';
+
+  return (
+    <div style={{
+      position: 'fixed', inset: 0, background: 'rgba(0,0,0,0.6)',
+      display: 'flex', alignItems: 'center', justifyContent: 'center', zIndex: 100,
+    }}>
+      <div style={{
+        background: 'var(--bg-color)', border: '1px solid var(--border-color)',
+        borderRadius: '16px', padding: '1.25rem', width: '320px',
+        boxShadow: '0 8px 32px rgba(0,0,0,0.4)',
+      }}>
+        <div style={{ fontWeight: '700', fontSize: '0.95rem', marginBottom: '0.3rem' }}>🔐 앱 자동화 권한 일괄 승인</div>
+        <div style={{ fontSize: '0.75rem', opacity: 0.6, marginBottom: '1rem' }}>
+          버튼을 누르면 macOS 허용 다이얼로그가 뜹니다. 한 번 허용하면 영구 기억됩니다.
+        </div>
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '0.4rem', marginBottom: '1rem' }}>
+          {APPS.map(app => (
+            <div key={app} style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+              <button
+                onClick={() => grant(app)}
+                disabled={granting !== null}
+                style={{
+                  flex: 1, textAlign: 'left', padding: '6px 10px',
+                  background: statuses[app] === 'granted' ? 'rgba(34,197,94,0.15)' : 'rgba(255,255,255,0.06)',
+                  border: '1px solid rgba(255,255,255,0.12)', borderRadius: '8px',
+                  color: 'inherit', cursor: granting ? 'wait' : 'pointer', fontSize: '0.82rem',
+                }}
+              >
+                {granting === app ? '⏳ ' : (statusIcon(statuses[app]) + ' ')}{app}
+              </button>
+            </div>
+          ))}
+        </div>
+        <div style={{ display: 'flex', gap: '0.5rem', justifyContent: 'flex-end' }}>
+          <button
+            onClick={grantAll}
+            disabled={granting !== null}
+            style={{
+              ...btnStyle,
+              background: 'var(--primary-color)', color: 'white',
+              padding: '6px 14px', borderRadius: '8px', fontSize: '0.82rem',
+            }}
+          >전체 허용</button>
+          <button onClick={onClose} style={{ ...btnStyle, fontSize: '0.82rem' }}>닫기</button>
+        </div>
+      </div>
+    </div>
+  );
+}
 
 function WorkspacePicker({ workspace, hasGuide, onSet, onClear }) {
   const [open, setOpen] = useState(false);
@@ -359,6 +467,7 @@ export default function AgentChatRoom() {
   const [serverInfo, setServerInfo] = useState(null);
   const [workspace, setWorkspace] = useState(null);
   const [hasGuide, setHasGuide] = useState(false);
+  const [showGrant, setShowGrant] = useState(false);
 
   const wsRef = useRef(null);
   const endRef = useRef(null);
@@ -400,13 +509,22 @@ export default function AgentChatRoom() {
       let data;
       try { data = JSON.parse(e.data); } catch { return; }
 
-      if (data.type === 'text') {
+      if (data.type === 'thinking') {
         setMessages(prev => {
-          const last = prev[prev.length - 1];
+          const hasThinking = prev.some(m => m.type === 'thinking');
+          if (hasThinking) return prev;
+          return [...prev, { id: crypto.randomUUID(), type: 'thinking', text: data.message || '요청 분석 중...' }];
+        });
+      } else if (data.type === 'thinking_done') {
+        setMessages(prev => prev.filter(m => m.type !== 'thinking'));
+      } else if (data.type === 'text') {
+        setMessages(prev => {
+          const withoutThinking = prev.filter(m => m.type !== 'thinking');
+          const last = withoutThinking[withoutThinking.length - 1];
           if (last?.type === 'assistant') {
-            return [...prev.slice(0, -1), { ...last, text: last.text + data.text }];
+            return [...withoutThinking.slice(0, -1), { ...last, text: last.text + data.text }];
           }
-          return [...prev, { id: crypto.randomUUID(), type: 'assistant', text: data.text }];
+          return [...withoutThinking, { id: crypto.randomUUID(), type: 'assistant', text: data.text }];
         });
       } else if (data.type === 'tool_start') {
         addMsg({ type: 'tool', toolId: data.id, name: data.name, args: data.args, risk: data.risk, status: 'running' });
@@ -419,9 +537,23 @@ export default function AgentChatRoom() {
         setHasGuide(data.has_guide || false);
       } else if (data.type === 'workspace_error') {
         addMsg({ type: 'error', text: `작업 공간 오류: ${data.message}` });
+      } else if (data.type === 'progress') {
+        setMessages(prev => {
+          const last = prev[prev.length - 1];
+          if (last?.type === 'progress') {
+            return [...prev.slice(0, -1), { ...last, text: `${data.icon} ${data.message}` }];
+          }
+          return [...prev, { id: crypto.randomUUID(), type: 'progress', text: `${data.icon} ${data.message}` }];
+        });
       } else if (data.type === 'done') {
+        setMessages(prev => prev.filter(m => m.type !== 'progress' && m.type !== 'thinking'));
+        setAgentBusy(false);
+      } else if (data.type === 'stopped') {
+        setMessages(prev => prev.filter(m => m.type !== 'progress' && m.type !== 'thinking'));
+        addMsg({ type: 'stopped', text: data.message || '작업이 중단됐습니다.' });
         setAgentBusy(false);
       } else if (data.type === 'error') {
+        setMessages(prev => prev.filter(m => m.type !== 'progress' && m.type !== 'thinking'));
         addMsg({ type: 'error', text: data.message });
         setAgentBusy(false);
       }
@@ -449,6 +581,9 @@ export default function AgentChatRoom() {
     if (!input.trim() || !connected || agentBusy) return;
     const text = input.trim();
     setInput('');
+    // Reset textarea height
+    const ta = e.target.closest('form')?.querySelector('textarea');
+    if (ta) { ta.style.height = 'auto'; }
     setAgentBusy(true);
     addMsg({ type: 'user', text });
     wsRef.current.send(JSON.stringify({ type: 'message', text }));
@@ -462,6 +597,13 @@ export default function AgentChatRoom() {
         : m
     ));
     wsRef.current?.send(JSON.stringify({ type: 'confirm', tool_call_id: toolId, approved }));
+  };
+
+  const handleStop = () => {
+    wsRef.current?.send(JSON.stringify({ type: 'stop' }));
+    setAgentBusy(false);
+    setMessages(prev => prev.filter(m => m.type !== 'progress' && m.type !== 'thinking'));
+    addMsg({ type: 'stopped', text: '⏹ 작업이 중단됐습니다.' });
   };
 
   const clearChat = () => setMessages([]);
@@ -481,6 +623,7 @@ export default function AgentChatRoom() {
       display: 'flex', flexDirection: 'column', height: '100vh',
       padding: 0, maxWidth: '600px', backgroundColor: 'var(--bg-color)',
     }}>
+      {showGrant && <AutomationGrantPanel onClose={() => setShowGrant(false)} />}
       {/* Header */}
       <header style={{
         display: 'flex', justifyContent: 'space-between', alignItems: 'center',
@@ -518,10 +661,19 @@ export default function AgentChatRoom() {
           </div>
         </div>
 
-        <button onClick={clearChat} style={{
-          background: 'none', border: 'none', color: '#ef4444',
-          cursor: 'pointer', padding: '5px', fontSize: '1rem', opacity: 0.9, fontWeight: 'bold',
-        }}>Clear</button>
+        <div style={{ display: 'flex', gap: '0.3rem', alignItems: 'center' }}>
+          <button
+            onClick={() => setShowGrant(true)}
+            title="앱 자동화 권한 관리"
+            style={{
+              background: 'none', border: 'none', cursor: 'pointer',
+              padding: '5px', fontSize: '1rem', opacity: 0.75,
+            }}>🔐</button>
+          <button onClick={clearChat} style={{
+            background: 'none', border: 'none', color: '#ef4444',
+            cursor: 'pointer', padding: '5px', fontSize: '1rem', opacity: 0.9, fontWeight: 'bold',
+          }}>Clear</button>
+        </div>
       </header>
 
       {/* Workspace picker */}
@@ -555,7 +707,7 @@ export default function AgentChatRoom() {
           <div style={{ textAlign: 'center', marginTop: '4rem', opacity: 0.5 }}>
             <div style={{ fontSize: '3rem', marginBottom: '0.5rem' }}>🤖</div>
             <div style={{ fontSize: '0.9rem' }}>
-              gemma4 로컬 AI 에이전트입니다.<br />
+              Gemini AI 에이전트입니다.<br />
               파일 조작, 앱 제어, 웹 브라우징, 코드 실행이 가능합니다.
             </div>
             {workspace && (
@@ -605,7 +757,14 @@ export default function AgentChatRoom() {
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
-                  p: ({ children }) => <p style={{ margin: '0.3rem 0' }}>{children}</p>,
+                  p: ({ children }) => {
+                    const hasBlock = Array.isArray(children)
+                      ? children.some(c => c?.type === 'pre' || c?.type === 'div' || c?.type === 'table')
+                      : children?.type === 'pre' || children?.type === 'div';
+                    return hasBlock
+                      ? <div style={{ margin: '0.3rem 0' }}>{children}</div>
+                      : <p style={{ margin: '0.3rem 0' }}>{children}</p>;
+                  },
                   ul: ({ children }) => <ul style={{ margin: '0.3rem 0', paddingLeft: '1.2rem' }}>{children}</ul>,
                   ol: ({ children }) => <ol style={{ margin: '0.3rem 0', paddingLeft: '1.2rem' }}>{children}</ol>,
                   li: ({ children }) => <li style={{ margin: '0.15rem 0' }}>{children}</li>,
@@ -625,7 +784,7 @@ export default function AgentChatRoom() {
                   strong: ({ children }) => <strong style={{ fontWeight: '700' }}>{children}</strong>,
                 }}
               >
-                {msg.text}
+                {deLatex(msg.text)}
               </ReactMarkdown>
             </div>
           );
@@ -642,6 +801,47 @@ export default function AgentChatRoom() {
             }}>
               {msg.approved ? '✓ 작업 허용됨' : '✗ 작업 취소됨'}
             </div>
+          );
+
+          if (msg.type === 'thinking') return (
+            <div key={msg.id} style={{
+              alignSelf: 'flex-start',
+              backgroundColor: 'var(--surface-color)',
+              padding: '0.6rem 0.9rem',
+              borderRadius: '18px 18px 18px 4px',
+              maxWidth: '85%',
+              fontSize: '0.88rem', opacity: 0.75,
+              display: 'flex', alignItems: 'center', gap: '0.5rem',
+            }}>
+              <span style={{ fontSize: '1rem' }}>🤔</span>
+              <span>{msg.text}</span>
+              <span style={{ display: 'flex', gap: '3px', alignItems: 'center' }}>
+                {[0, 0.2, 0.4].map(delay => (
+                  <span key={delay} style={{
+                    width: '5px', height: '5px', borderRadius: '50%',
+                    background: 'currentColor', opacity: 0.5,
+                    animation: `pulse 1s ${delay}s infinite`,
+                    display: 'inline-block',
+                  }} />
+                ))}
+              </span>
+            </div>
+          );
+
+          if (msg.type === 'progress') return (
+            <div key={msg.id} style={{
+              alignSelf: 'flex-start', fontSize: '0.8rem', opacity: 0.65,
+              padding: '0.25rem 0.5rem', fontStyle: 'italic',
+            }}>{msg.text}</div>
+          );
+
+          if (msg.type === 'stopped') return (
+            <div key={msg.id} style={{
+              alignSelf: 'flex-start',
+              background: 'rgba(234,179,8,0.1)', border: '1px solid rgba(234,179,8,0.35)',
+              borderRadius: '10px', padding: '0.45rem 0.75rem',
+              fontSize: '0.82rem', color: '#eab308',
+            }}>⏹ {msg.text}</div>
           );
 
           if (msg.type === 'error') return (
@@ -677,35 +877,62 @@ export default function AgentChatRoom() {
         backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
         borderTop: '2px solid var(--primary-color)',
       }}>
-        <form onSubmit={sendMessage} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
-          <input
-            type="text"
+        <form onSubmit={sendMessage} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
+          <textarea
+            rows={1}
             value={input}
-            onChange={e => setInput(e.target.value)}
+            onChange={e => {
+              setInput(e.target.value);
+              e.target.style.height = 'auto';
+              e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
+            }}
+            onKeyDown={e => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage(e);
+              }
+            }}
             placeholder={
               !connected ? '서버 오프라인...' :
               agentBusy ? 'AI가 작업 중입니다...' :
-              '명령을 입력하세요...'
+              '명령을 입력하세요... (Shift+Enter: 줄바꿈)'
             }
             disabled={!connected || agentBusy}
             className="input-field"
             style={{
-              marginBottom: 0, flexGrow: 1, borderRadius: '24px', paddingLeft: '1.25rem',
+              marginBottom: 0, flexGrow: 1, borderRadius: '16px', paddingLeft: '1.25rem',
+              paddingTop: '0.65rem', paddingBottom: '0.65rem',
               backgroundColor: 'var(--surface-color)', border: '1px solid var(--border-color)',
-              color: 'var(--text-main)',
+              color: 'var(--text-main)', resize: 'none', overflow: 'hidden',
+              lineHeight: '1.5', fontFamily: 'inherit', fontSize: 'inherit',
             }}
           />
-          <button
-            type="submit"
-            className="btn"
-            disabled={!input.trim() || !connected || agentBusy}
-            style={{
-              width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
-              backgroundColor: input.trim() && connected && !agentBusy
-                ? 'var(--primary-color)' : 'rgba(255,255,255,0.1)',
-              transition: 'background-color 0.3s',
-            }}
-          >↑</button>
+          {agentBusy ? (
+            <button
+              type="button"
+              onClick={handleStop}
+              title="작업 중단"
+              style={{
+                width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
+                backgroundColor: '#ef4444', border: 'none', cursor: 'pointer',
+                fontSize: '1rem', color: 'white', flexShrink: 0,
+                boxShadow: '0 0 0 3px rgba(239,68,68,0.3)',
+                transition: 'box-shadow 0.2s',
+              }}
+            >■</button>
+          ) : (
+            <button
+              type="submit"
+              className="btn"
+              disabled={!input.trim() || !connected}
+              style={{
+                width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
+                backgroundColor: input.trim() && connected
+                  ? 'var(--primary-color)' : 'rgba(255,255,255,0.1)',
+                transition: 'background-color 0.3s',
+              }}
+            >↑</button>
+          )}
         </form>
       </div>
     </div>

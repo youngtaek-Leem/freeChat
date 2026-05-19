@@ -432,6 +432,8 @@ const ChatRoom = ({ session }) => {
   const sendMessage = async (e) => {
     e.preventDefault();
     if (!input.trim() || !encKey || !sigKey) return;
+    const ta = e.target.closest?.('form')?.querySelector('textarea');
+    if (ta) ta.style.height = 'auto';
 
     try {
       const encryptedText = await cryptoUtils.encrypt(input, encKey);
@@ -674,7 +676,7 @@ const ChatRoom = ({ session }) => {
         backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
         borderTop: '2px solid var(--primary-color)',
       }}>
-        <form onSubmit={sendMessage} style={{ display: 'flex', gap: '0.5rem', alignItems: 'center' }}>
+        <form onSubmit={sendMessage} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
           <input
             ref={imageInputRef}
             type="file"
@@ -714,16 +716,29 @@ const ChatRoom = ({ session }) => {
           >
             📎
           </button>
-          <input
-            type="text" value={input}
-            onChange={(e) => setInput(e.target.value)}
-            placeholder={keyError ? 'Secure channel unavailable' : 'Type a message...'}
+          <textarea
+            rows={1}
+            value={input}
+            onChange={(e) => {
+              setInput(e.target.value);
+              e.target.style.height = 'auto';
+              e.target.style.height = Math.min(e.target.scrollHeight, 160) + 'px';
+            }}
+            onKeyDown={(e) => {
+              if (e.key === 'Enter' && !e.shiftKey) {
+                e.preventDefault();
+                sendMessage(e);
+              }
+            }}
+            placeholder={keyError ? 'Secure channel unavailable' : 'Type a message... (Shift+Enter: 줄바꿈)'}
             disabled={!!keyError}
             className="input-field"
             style={{
-              marginBottom: 0, flexGrow: 1, borderRadius: '24px', paddingLeft: '1.25rem',
+              marginBottom: 0, flexGrow: 1, borderRadius: '16px', paddingLeft: '1.25rem',
+              paddingTop: '0.65rem', paddingBottom: '0.65rem',
               backgroundColor: 'var(--surface-color)', border: '1px solid var(--border-color)',
-              color: 'var(--text-main)',
+              color: 'var(--text-main)', resize: 'none', overflow: 'hidden',
+              lineHeight: '1.5', fontFamily: 'inherit', fontSize: 'inherit',
             }}
           />
           <button type="submit" className="btn" style={{
