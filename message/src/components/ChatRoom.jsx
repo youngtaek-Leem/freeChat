@@ -580,36 +580,37 @@ const ChatRoom = ({ session }) => {
   };
 
   const clearChat = async () => {
-    if (!sigKey) return;
+    if (!isAiRoom && !sigKey) return;
     if (!window.confirm('ARE YOU SURE? This will delete ALL messages for BOTH participants FOREVER.')) return;
 
     try {
       setMessages([]);
       await dbUtils.clearRoomMessages(roomId);
-
-      const sender = myId;
-      const sig = await cryptoUtils.sign(sigKey, { sender, roomId });
-      const clearPayload = {
-        type: 'broadcast',
-        event: 'clear_chat',
-        payload: { roomId, sender, sig },
-      };
-
-      if (channelRef.current) await channelRef.current.send(clearPayload);
-
-      const userChannel = supabase.channel(`user:${friendId}`);
-      userChannel.subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          await userChannel.send(clearPayload);
-          setTimeout(() => supabase.removeChannel(userChannel), 1000);
-        }
-      });
-
       await supabase.from('pending_messages').delete().eq('room_id', roomId);
 
-      const storagePaths = messages.map(m => extractStoragePath(m.text)).filter(Boolean);
-      if (storagePaths.length > 0) {
-        await supabase.storage.from('chat-images').remove(storagePaths);
+      if (!isAiRoom) {
+        const sender = myId;
+        const sig = await cryptoUtils.sign(sigKey, { sender, roomId });
+        const clearPayload = {
+          type: 'broadcast',
+          event: 'clear_chat',
+          payload: { roomId, sender, sig },
+        };
+
+        if (channelRef.current) await channelRef.current.send(clearPayload);
+
+        const userChannel = supabase.channel(`user:${friendId}`);
+        userChannel.subscribe(async (status) => {
+          if (status === 'SUBSCRIBED') {
+            await userChannel.send(clearPayload);
+            setTimeout(() => supabase.removeChannel(userChannel), 1000);
+          }
+        });
+
+        const storagePaths = messages.map(m => extractStoragePath(m.text)).filter(Boolean);
+        if (storagePaths.length > 0) {
+          await supabase.storage.from('chat-images').remove(storagePaths);
+        }
       }
     } catch (e) {
       console.error('Error clearing chat:', e);
