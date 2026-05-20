@@ -184,17 +184,23 @@ const ChatRoom = ({ session }) => {
         return;
       }
 
-      const { data } = await supabase
-        .from('profiles')
-        .select('username, public_key, avatar_url, is_ai')
-        .eq('id', friendId)
-        .single();
-      setFriendProfile(data);
-
-      if (data?.is_ai) {
+      if (friendId === AI_AGENT_ID) {
+        const { data: aiProfile } = await supabase
+          .from('profiles')
+          .select('username, avatar_url')
+          .eq('id', friendId)
+          .single();
+        setFriendProfile(aiProfile);
         setIsAiRoom(true);
         return;
       }
+
+      const { data } = await supabase
+        .from('profiles')
+        .select('username, public_key, avatar_url')
+        .eq('id', friendId)
+        .single();
+      setFriendProfile(data);
 
       if (!data?.public_key) {
         setKeyError('Friend has not set up secure messaging yet. Ask them to log in again.');
