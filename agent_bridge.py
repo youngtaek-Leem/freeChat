@@ -168,14 +168,34 @@ async def clear_status(room_id: str):
 
 
 async def ask_agent(room_id: str, user_id: str, text: str, images: list | None = None) -> str | None:
+    stop_watcher_task = None
+
+    async def stop_watcher(ws):
+        while True:
+            await asyncio.sleep(3)
+            rows = await supabase_get("pending_messages", {
+                "receiver_id": f"eq.{AI_AGENT_ID}",
+                "room_id": f"eq.{room_id}",
+                "encrypted_payload": f"eq._ai_stop_:",
+                "select": "id",
+            })
+            if rows:
+                await supabase_delete_ids("pending_messages", [r["id"] for r in rows])
+                try:
+                    await ws.send(json.dumps({"type": "stop"}))
+                except Exception:
+                    pass
+                return
+
     try:
         ws = await _get_ws(room_id)
-        msg = {"type": "message", "text": text}
+        payload = {"type": "message", "text": text}
         if images:
-            msg["images"] = images
-        await ws.send(json.dumps(msg))
+            payload["images"] = images
+        await ws.send(json.dumps(payload))
         accumulated = ""
         await send_status(room_id, user_id, "🤔 요청 분석 중...")
+        stop_watcher_task = asyncio.create_task(stop_watcher(ws))
         while True:
             raw = await asyncio.wait_for(ws.recv(), timeout=180)
             msg = json.loads(raw)
@@ -185,9 +205,12 @@ async def ask_agent(room_id: str, user_id: str, text: str, images: list | None =
             elif t == "done":
                 await clear_status(room_id)
                 return accumulated or None
-            elif t == "error":
+            elif t in ("error", "stopped"):
                 await clear_status(room_id)
-                print(f"[bridge] agent 오류 응답: {msg}")
+                if t == "error":
+                    print(f"[bridge] agent 오류 응답: {msg}")
+                else:
+                    print(f"[bridge] 작업 중단됨")
                 return None
             elif t == "thinking":
                 await send_status(room_id, user_id, "🤔 " + (msg.get("message") or "요청 분석 중..."))
@@ -203,6 +226,9 @@ async def ask_agent(room_id: str, user_id: str, text: str, images: list | None =
         print(f"[bridge] ask_agent 오류: {e}")
         _room_ws.pop(room_id, None)
         return None
+    finally:
+        if stop_watcher_task:
+            stop_watcher_task.cancel()
 
 
 async def poll_loop():

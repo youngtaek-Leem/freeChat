@@ -164,6 +164,7 @@ const ChatRoom = ({ session }) => {
   const [friendProfile, setFriendProfile] = useState(null);
   const [keyError, setKeyError] = useState(null);
   const [isAiRoom, setIsAiRoom] = useState(false);
+  const [aiProcessing, setAiProcessing] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null); // null | { done, total }
   const messagesEndRef = useRef(null);
   const channelRef = useRef(null);
@@ -342,6 +343,7 @@ const ChatRoom = ({ session }) => {
           // 상태 메시지: 애니메이션 버블로 업데이트 (IndexedDB 저장 안 함)
           const statusText = payload.slice(STATUS_PREFIX.length);
           const statusMsg = { messageId: row.message_id, roomId, sender: row.sender_id, text: statusText, timestamp: row.timestamp, read: true, isStatus: true };
+          setAiProcessing(true);
           setMessages(prev => {
             const exists = prev.find(m => m.messageId === row.message_id);
             if (exists) return prev.map(m => m.messageId === row.message_id ? statusMsg : m);
@@ -353,6 +355,7 @@ const ChatRoom = ({ session }) => {
           const text = payload.slice(AI_PREFIX.length);
           const newMsg = { messageId: row.message_id, roomId, sender: row.sender_id, text, timestamp: row.timestamp, read: true, recipientRead: true };
           await dbUtils.saveMessage(newMsg);
+          setAiProcessing(false);
           setMessages(prev => {
             const withoutStatus = prev.filter(m => !m.isStatus);
             return withoutStatus.find(m => m.messageId === row.message_id) ? withoutStatus : [...withoutStatus, newMsg];
@@ -475,6 +478,7 @@ const ChatRoom = ({ session }) => {
       room_id: roomId, encrypted_payload: `${AI_PREFIX}${IMG_PREFIX}${filePath}`,
       message_id: messageId, timestamp,
     });
+    setAiProcessing(true);
   };
 
   const sendAiFile = async (file) => {
@@ -496,6 +500,7 @@ const ChatRoom = ({ session }) => {
       room_id: roomId, encrypted_payload: `${AI_PREFIX}${FILE_PREFIX}${filePath}|${file.name}`,
       message_id: messageId, timestamp,
     });
+    setAiProcessing(true);
   };
 
   const sendFiles = async (files) => {
@@ -540,6 +545,16 @@ const ChatRoom = ({ session }) => {
     if (failed > 0) alert(`${failed}장 전송에 실패했습니다.`);
   };
 
+  const stopAiProcessing = async () => {
+    setAiProcessing(false);
+    setMessages(prev => prev.filter(m => !m.isStatus));
+    await supabase.from('pending_messages').insert({
+      sender_id: myId, receiver_id: AI_AGENT_ID,
+      room_id: roomId, encrypted_payload: '_ai_stop_:',
+      message_id: window.crypto.randomUUID(), timestamp: new Date().toISOString(),
+    });
+  };
+
   const sendMessage = async (e) => {
     e.preventDefault();
     if (!input.trim()) return;
@@ -560,6 +575,7 @@ const ChatRoom = ({ session }) => {
           room_id: roomId, encrypted_payload: `${AI_PREFIX}${input}`,
           message_id: messageId, timestamp,
         });
+        setAiProcessing(true);
       } catch (err) {
         console.error('AI send error:', err);
       }
@@ -914,13 +930,23 @@ const ChatRoom = ({ session }) => {
               lineHeight: '1.5', fontFamily: 'inherit', fontSize: 'inherit',
             }}
           />
-          <button type="submit" className="btn" style={{
-            width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
-            backgroundColor: input.trim() && (isAiRoom || !keyError) ? 'var(--primary-color)' : 'rgba(255,255,255,0.1)',
-            transition: 'background-color 0.3s',
-          }} disabled={!input.trim() || (!isAiRoom && !!keyError)}>
-            ↑
-          </button>
+          {isAiRoom && aiProcessing ? (
+            <button type="button" onClick={stopAiProcessing} style={{
+              width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
+              backgroundColor: '#e53e3e', border: 'none', cursor: 'pointer',
+              fontSize: '1rem', flexShrink: 0, color: 'white', transition: 'background-color 0.3s',
+            }}>
+              ⏹
+            </button>
+          ) : (
+            <button type="submit" className="btn" style={{
+              width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
+              backgroundColor: input.trim() && (isAiRoom || !keyError) ? 'var(--primary-color)' : 'rgba(255,255,255,0.1)',
+              transition: 'background-color 0.3s',
+            }} disabled={!input.trim() || (!isAiRoom && !!keyError)}>
+              ↑
+            </button>
+          )}
         </form>
       </div>
     </div>
