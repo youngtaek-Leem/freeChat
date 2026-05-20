@@ -16,10 +16,26 @@ import tempfile
 from pathlib import Path
 
 import httpx
+from contextlib import asynccontextmanager
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 
-app = FastAPI()
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    task = None
+    if os.environ.get("SUPABASE_SERVICE_KEY"):
+        from agent_bridge import poll_loop
+        task = asyncio.create_task(poll_loop())
+        print("[server] AI Friend Bridge 시작됨")
+    else:
+        print("[server] SUPABASE_SERVICE_KEY 없음 — AI Friend Bridge 비활성")
+    yield
+    if task:
+        task.cancel()
+
+
+app = FastAPI(lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],

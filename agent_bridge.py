@@ -16,16 +16,9 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://cqhxbsyamdmdraiueaht.supa
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 AI_AGENT_ID = "a04fce0a-02f8-4040-962a-22d7d98851f0"
 AI_PREFIX = "_ai_:"
-AGENT_WS = os.environ.get("AGENT_WS", "wss://localhost:3001/ws")
+AGENT_WS = os.environ.get("AGENT_WS", "ws://localhost:3001/ws")
 
 _room_ws: dict = {}
-
-
-def _ssl_ctx():
-    ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    return ctx
 
 
 async def _get_ws(room_id: str):
@@ -36,7 +29,13 @@ async def _get_ws(room_id: str):
             return ws
         except Exception:
             _room_ws.pop(room_id, None)
-    ws = await websockets.connect(AGENT_WS, ssl=_ssl_ctx())
+    use_ssl = AGENT_WS.startswith("wss://")
+    ssl_ctx = None
+    if use_ssl:
+        ssl_ctx = ssl.create_default_context()
+        ssl_ctx.check_hostname = False
+        ssl_ctx.verify_mode = ssl.CERT_NONE
+    ws = await websockets.connect(AGENT_WS, ssl=ssl_ctx)
     _room_ws[room_id] = ws
     return ws
 
