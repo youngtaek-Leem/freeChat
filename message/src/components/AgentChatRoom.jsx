@@ -3,14 +3,12 @@ import { Link } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
-const _SECURE = window.location.protocol === 'https:';
-const _BASE = _SECURE ? 'https://localhost:3001' : 'http://localhost:3001';
-const AGENT_URL = _SECURE ? 'wss://localhost:3001/ws' : 'ws://localhost:3001/ws';
-const STATUS_URL = `${_BASE}/status`;
-const BROWSE_URL = `${_BASE}/browse`;
-const MKDIR_URL = `${_BASE}/mkdir`;
-const GRANT_URL = `${_BASE}/grant_automation`;
-const TARGETS_URL = `${_BASE}/automation_targets`;
+const AGENT_URL = 'wss://localhost:3001/ws';
+const STATUS_URL = 'https://localhost:3001/status';
+const BROWSE_URL = 'https://localhost:3001/browse';
+const MKDIR_URL = 'https://localhost:3001/mkdir';
+const GRANT_URL = 'https://localhost:3001/grant_automation';
+const TARGETS_URL = 'https://localhost:3001/automation_targets';
 
 const LATEX_MAP = [
   [/\$\\rightarrow\$/g, '→'],
