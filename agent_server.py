@@ -1487,4 +1487,10 @@ async def ws_endpoint(websocket: WebSocket):
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="127.0.0.1", port=3001, log_level="info")
+    ssl_cert = os.environ.get("SSL_CERT")
+    ssl_key = os.environ.get("SSL_KEY")
+    uvicorn.run(
+        app, host="127.0.0.1", port=3001, log_level="info",
+        ssl_certfile=ssl_cert or None,
+        ssl_keyfile=ssl_key or None,
+    )

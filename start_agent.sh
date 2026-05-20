@@ -35,8 +35,20 @@ fi
 
 GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.1-flash-lite}"
 
+# SSL 인증서 자동 탐색 (mkcert로 생성된 localhost.pem)
+SSL_CERT="${SSL_CERT:-$SCRIPT_DIR/localhost.pem}"
+SSL_KEY="${SSL_KEY:-$SCRIPT_DIR/localhost-key.pem}"
+
+if [ -f "$SSL_CERT" ] && [ -f "$SSL_KEY" ]; then
+  PROTOCOL="https"
+  export SSL_CERT SSL_KEY
+else
+  PROTOCOL="http"
+  unset SSL_CERT SSL_KEY
+fi
+
 echo ""
-echo "AI Agent 서버 시작: http://localhost:3001"
+echo "AI Agent 서버 시작: ${PROTOCOL}://localhost:3001"
 echo "사용 모델: $GEMINI_MODEL"
 echo "종료하려면 Ctrl+C"
 echo ""
