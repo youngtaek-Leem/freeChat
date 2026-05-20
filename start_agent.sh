@@ -56,6 +56,13 @@ echo ""
 export GEMINI_API_KEY
 export GEMINI_MODEL
 
+# 슬립 방지 (화면은 꺼져도 됨 — caffeinate -i: 시스템 idle sleep만 차단)
+CAFFEINATE_PID=""
+if command -v caffeinate &>/dev/null; then
+  caffeinate -i &
+  CAFFEINATE_PID=$!
+fi
+
 # Agent 서버 실행 (Bridge 포함)
 if [ -n "$SUPABASE_SERVICE_KEY" ]; then
   export SUPABASE_SERVICE_KEY
@@ -78,6 +85,6 @@ if [ -z "$AGENT_ONLY" ] && [ -d "$SCRIPT_DIR/message" ]; then
 fi
 
 # Ctrl+C 시 모든 프로세스 종료
-trap "kill $AGENT_PID $VITE_PID 2>/dev/null; exit" INT TERM
+trap "kill $AGENT_PID $VITE_PID $CAFFEINATE_PID 2>/dev/null; exit" INT TERM
 
 wait $AGENT_PID
