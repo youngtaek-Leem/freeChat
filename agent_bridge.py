@@ -172,7 +172,6 @@ async def ask_agent(room_id: str, user_id: str, text: str, images: list | None =
 
     async def stop_watcher(ws):
         while True:
-            await asyncio.sleep(3)
             rows = await supabase_get("pending_messages", {
                 "receiver_id": f"eq.{AI_AGENT_ID}",
                 "room_id": f"eq.{room_id}",
@@ -186,6 +185,7 @@ async def ask_agent(room_id: str, user_id: str, text: str, images: list | None =
                 except Exception:
                     pass
                 return
+            await asyncio.sleep(2)
 
     try:
         ws = await _get_ws(room_id)
@@ -242,6 +242,9 @@ async def poll_loop():
             })
             for row in rows:
                 payload = row.get("encrypted_payload", "")
+                # stop 신호는 poll_loop에서 건드리지 않음 — stop_watcher가 처리
+                if payload == "_ai_stop_:":
+                    continue
                 if not payload.startswith(AI_PREFIX):
                     await supabase_delete_ids("pending_messages", [row["id"]])
                     continue
@@ -277,7 +280,16 @@ async def poll_loop():
                 response = await ask_agent(room_id, user_id, prompt, images)
 
                 if response is None:
-                    print("[bridge] agent 응답 없음, 재시도 예정")
+                    print("[bridge] agent 응답 없음, 요청 삭제")
+                    await supabase_delete_ids("pending_messages", [row["id"]])
+                    await supabase_post("pending_messages", {
+                        "sender_id": AI_AGENT_ID,
+                        "receiver_id": user_id,
+                        "room_id": room_id,
+                        "encrypted_payload": f"{AI_PREFIX}⚠️ 요청을 처리할 수 없었습니다. 다시 시도해 주세요.",
+                        "message_id": str(uuid.uuid4()),
+                        "timestamp": datetime.now(timezone.utc).isoformat(),
+                    })
                     continue
 
                 await supabase_delete_ids("pending_messages", [row["id"]])
