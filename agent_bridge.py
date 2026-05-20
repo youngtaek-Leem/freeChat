@@ -41,7 +41,7 @@ async def _get_ws(room_id: str):
     return ws
 
 
-async def ask_agent(room_id: str, text: str) -> str:
+async def ask_agent(room_id: str, text: str) -> str | None:
     try:
         ws = await _get_ws(room_id)
         await ws.send(json.dumps({"type": "message", "content": text}))
@@ -51,10 +51,11 @@ async def ask_agent(room_id: str, text: str) -> str:
             if msg.get("type") == "message":
                 return msg.get("content", "")
             if msg.get("type") == "error":
-                return "오류가 발생했습니다."
+                return None
     except Exception as e:
+        print(f"[bridge] ask_agent 오류: {e}")
         _room_ws.pop(room_id, None)
-        return f"Agent 연결 오류: {e}"
+        return None
 
 
 async def supabase_get(path: str, params: dict) -> list:
@@ -108,15 +109,25 @@ async def poll_loop():
             })
             for row in rows:
                 payload = row.get("encrypted_payload", "")
-                text = payload[len(AI_PREFIX):] if payload.startswith(AI_PREFIX) else payload
+                if not payload.startswith(AI_PREFIX):
+                    # 암호화된 이전 메시지는 무시하고 삭제
+                    await supabase_delete_ids("pending_messages", [row["id"]])
+                    continue
+
+                text = payload[len(AI_PREFIX):]
                 room_id = row["room_id"]
                 user_id = row["sender_id"]
 
                 print(f"[bridge] '{text[:60]}' → agent 처리 중...")
-                await supabase_delete_ids("pending_messages", [row["id"]])
-
                 response = await ask_agent(room_id, text)
 
+                if response is None:
+                    # agent 오류 시 메시지 남겨두고 재시도
+                    print(f"[bridge] agent 응답 없음, 재시도 예정")
+                    continue
+
+                # 응답 성공 시에만 원본 메시지 삭제
+                await supabase_delete_ids("pending_messages", [row["id"]])
                 await supabase_post("pending_messages", {
                     "sender_id": AI_AGENT_ID,
                     "receiver_id": user_id,
