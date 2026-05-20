@@ -4,6 +4,7 @@ Polls pending_messages for AI Friend, relays to agent_server via WebSocket, post
 Progress updates are sent as _ai_status_: prefixed messages.
 """
 import asyncio
+import base64
 import json
 import os
 import ssl
@@ -17,7 +18,19 @@ SUPABASE_URL = os.environ.get("SUPABASE_URL", "https://cqhxbsyamdmdraiueaht.supa
 SUPABASE_SERVICE_KEY = os.environ.get("SUPABASE_SERVICE_KEY", "")
 AI_AGENT_ID = "a04fce0a-02f8-4040-962a-22d7d98851f0"
 AI_PREFIX = "_ai_:"
+IMG_PREFIX = "_img_:"
+FILE_PREFIX = "_file_:"
 STATUS_PREFIX = "_ai_status_:"
+
+_MIME_MAP = {
+    "jpg": "image/jpeg", "jpeg": "image/jpeg", "png": "image/png",
+    "gif": "image/gif", "webp": "image/webp", "heic": "image/heic",
+}
+
+def _mime_from_path(path: str) -> str:
+    ext = path.rsplit(".", 1)[-1].lower() if "." in path else ""
+    return _MIME_MAP.get(ext, "image/jpeg")
+
 AGENT_WS = os.environ.get("AGENT_WS", "ws://localhost:3001/ws")
 
 TOOL_ICONS = {
@@ -44,6 +57,21 @@ TOOL_ICONS = {
 
 _room_ws: dict = {}
 _status_ids: dict = {}  # room_id -> status message_id
+
+
+async def download_storage_file(file_path: str) -> dict | None:
+    """Download a file from Supabase storage, return {data: base64, mime_type}."""
+    async with httpx.AsyncClient() as c:
+        r = await c.get(
+            f"{SUPABASE_URL}/storage/v1/object/chat-images/{file_path}",
+            headers={
+                "apikey": SUPABASE_SERVICE_KEY,
+                "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
+            },
+        )
+        if r.status_code == 200:
+            return {"data": base64.b64encode(r.content).decode(), "mime_type": _mime_from_path(file_path)}
+        return None
 
 
 async def _get_ws(room_id: str):
@@ -139,10 +167,13 @@ async def clear_status(room_id: str):
         await supabase_delete_by_message_id(_status_ids.pop(room_id))
 
 
-async def ask_agent(room_id: str, user_id: str, text: str) -> str | None:
+async def ask_agent(room_id: str, user_id: str, text: str, images: list | None = None) -> str | None:
     try:
         ws = await _get_ws(room_id)
-        await ws.send(json.dumps({"type": "message", "text": text}))
+        msg = {"type": "message", "text": text}
+        if images:
+            msg["images"] = images
+        await ws.send(json.dumps(msg))
         accumulated = ""
         await send_status(room_id, user_id, "🤔 요청 분석 중...")
         while True:
@@ -193,8 +224,31 @@ async def poll_loop():
                 room_id = row["room_id"]
                 user_id = row["sender_id"]
 
-                print(f"[bridge] '{text[:60]}' → agent 처리 중...")
-                response = await ask_agent(room_id, user_id, text)
+                # Resolve image/file attachments
+                images = None
+                prompt = text
+                if text.startswith(IMG_PREFIX):
+                    file_path = text[len(IMG_PREFIX):]
+                    img = await download_storage_file(file_path)
+                    if img:
+                        images = [img]
+                        prompt = "이미지를 분석해주세요."
+                    else:
+                        prompt = "이미지를 전송했지만 읽을 수 없습니다."
+                elif text.startswith(FILE_PREFIX):
+                    content = text[len(FILE_PREFIX):]
+                    sep = content.find("|")
+                    file_path = content[:sep] if sep != -1 else content
+                    file_name = content[sep+1:] if sep != -1 else file_path.rsplit("/", 1)[-1]
+                    img = await download_storage_file(file_path)
+                    if img and img["mime_type"].startswith("image/"):
+                        images = [img]
+                        prompt = f"파일 '{file_name}'을 분석해주세요."
+                    else:
+                        prompt = f"파일 '{file_name}'이 전송되었습니다. (이미지가 아닌 파일은 직접 분석할 수 없습니다.)"
+
+                print(f"[bridge] '{prompt[:60]}' → agent 처리 중...")
+                response = await ask_agent(room_id, user_id, prompt, images)
 
                 if response is None:
                     print("[bridge] agent 응답 없음, 재시도 예정")

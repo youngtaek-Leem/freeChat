@@ -133,8 +133,11 @@ def _to_gemini_contents(conversation: list) -> tuple[str, list]:
             parts = []
             if content:
                 parts.append({"text": content})
-            for img_b64 in msg.get("images", []):
-                parts.append({"inline_data": {"mime_type": "image/png", "data": img_b64}})
+            for img in msg.get("images", []):
+                if isinstance(img, dict):
+                    parts.append({"inline_data": {"mime_type": img.get("mime_type", "image/jpeg"), "data": img["data"]}})
+                else:
+                    parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img}})
             if parts:
                 contents.append({"role": "user", "parts": parts})
             i += 1
@@ -1342,10 +1345,14 @@ async def ws_endpoint(websocket: WebSocket):
                 continue
 
             user_text = data.get("text", "").strip()
-            if not user_text:
+            user_images = data.get("images", [])
+            if not user_text and not user_images:
                 continue
 
-            conversation.append({"role": "user", "content": user_text})
+            entry = {"role": "user", "content": user_text}
+            if user_images:
+                entry["images"] = user_images
+            conversation.append(entry)
 
             # Agentic loop
             while True:

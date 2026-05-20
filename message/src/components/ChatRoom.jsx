@@ -455,14 +455,59 @@ const ChatRoom = ({ session }) => {
     });
   };
 
+  const sendAiImage = async (file) => {
+    const ext = file.name.split('.').pop() || 'jpg';
+    const filePath = `${roomId}/${window.crypto.randomUUID()}.${ext}`;
+    const { error: uploadError } = await supabase.storage
+      .from('chat-images')
+      .upload(filePath, file, { contentType: file.type });
+    if (uploadError) throw uploadError;
+
+    const localImageUrl = URL.createObjectURL(file);
+    const messageText = `${IMG_PREFIX}${filePath}`;
+    const messageId = window.crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    const myMessage = { messageId, roomId, sender: myId, text: messageText, timestamp, read: true, recipientRead: false, localImageUrl };
+    await dbUtils.saveMessage(myMessage);
+    setMessages(prev => [...prev, myMessage]);
+    await supabase.from('pending_messages').insert({
+      sender_id: myId, receiver_id: friendId,
+      room_id: roomId, encrypted_payload: `${AI_PREFIX}${IMG_PREFIX}${filePath}`,
+      message_id: messageId, timestamp,
+    });
+  };
+
+  const sendAiFile = async (file) => {
+    const ext = file.name.split('.').pop() || 'bin';
+    const filePath = `files/${roomId}/${window.crypto.randomUUID()}.${ext}`;
+    const { error: uploadError } = await supabase.storage
+      .from('chat-images')
+      .upload(filePath, file, { contentType: file.type });
+    if (uploadError) throw uploadError;
+
+    const messageText = `${FILE_PREFIX}${filePath}|${file.name}`;
+    const messageId = window.crypto.randomUUID();
+    const timestamp = new Date().toISOString();
+    const myMessage = { messageId, roomId, sender: myId, text: messageText, timestamp, read: true, recipientRead: false };
+    await dbUtils.saveMessage(myMessage);
+    setMessages(prev => [...prev, myMessage]);
+    await supabase.from('pending_messages').insert({
+      sender_id: myId, receiver_id: friendId,
+      room_id: roomId, encrypted_payload: `${AI_PREFIX}${FILE_PREFIX}${filePath}|${file.name}`,
+      message_id: messageId, timestamp,
+    });
+  };
+
   const sendFiles = async (files) => {
-    if (!encKey || !sigKey || files.length === 0) return;
+    if (!isAiRoom && (!encKey || !sigKey)) return;
+    if (files.length === 0) return;
     const limited = Array.from(files).slice(0, 10);
     setUploadProgress({ done: 0, total: limited.length });
     let failed = 0;
     for (const file of limited) {
       try {
-        await sendFile(file);
+        if (isAiRoom) await sendAiFile(file);
+        else await sendFile(file);
       } catch (e) {
         console.error('File send error:', e);
         failed++;
@@ -475,13 +520,15 @@ const ChatRoom = ({ session }) => {
   };
 
   const sendImages = async (files) => {
-    if (!encKey || !sigKey || files.length === 0) return;
+    if (!isAiRoom && (!encKey || !sigKey)) return;
+    if (files.length === 0) return;
     const limited = Array.from(files).slice(0, 10);
     setUploadProgress({ done: 0, total: limited.length });
     let failed = 0;
     for (const file of limited) {
       try {
-        await sendImage(file);
+        if (isAiRoom) await sendAiImage(file);
+        else await sendImage(file);
       } catch (e) {
         console.error('Image send error:', e);
         failed++;
