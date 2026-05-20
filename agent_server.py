@@ -25,9 +25,12 @@ from fastapi.middleware.cors import CORSMiddleware
 async def lifespan(app: FastAPI):
     task = None
     if os.environ.get("SUPABASE_SERVICE_KEY"):
+        ssl_cert = os.environ.get("SSL_CERT")
+        scheme = "wss" if ssl_cert and os.path.exists(ssl_cert) else "ws"
+        os.environ.setdefault("AGENT_WS", f"{scheme}://localhost:3001/ws")
         from agent_bridge import poll_loop
         task = asyncio.create_task(poll_loop())
-        print("[server] AI Friend Bridge 시작됨")
+        print(f"[server] AI Friend Bridge 시작됨 ({os.environ['AGENT_WS']})")
     else:
         print("[server] SUPABASE_SERVICE_KEY 없음 — AI Friend Bridge 비활성")
     yield
