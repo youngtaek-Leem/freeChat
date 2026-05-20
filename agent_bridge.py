@@ -44,14 +44,20 @@ async def _get_ws(room_id: str):
 async def ask_agent(room_id: str, text: str) -> str | None:
     try:
         ws = await _get_ws(room_id)
-        await ws.send(json.dumps({"type": "message", "content": text}))
+        await ws.send(json.dumps({"type": "message", "text": text}))
+        accumulated = ""
         while True:
             raw = await asyncio.wait_for(ws.recv(), timeout=180)
             msg = json.loads(raw)
-            if msg.get("type") == "message":
-                return msg.get("content", "")
-            if msg.get("type") == "error":
+            t = msg.get("type")
+            if t == "text":
+                accumulated += msg.get("text", "")
+            elif t == "done":
+                return accumulated or None
+            elif t == "error":
+                print(f"[bridge] agent 오류 응답: {msg}")
                 return None
+            # thinking, thinking_done, tool_start, tool_result, progress 등은 무시
     except Exception as e:
         print(f"[bridge] ask_agent 오류: {e}")
         _room_ws.pop(room_id, None)
