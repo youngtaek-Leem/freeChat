@@ -4,6 +4,8 @@ import { cryptoUtils } from '../utils/crypto';
 import { dbUtils } from '../utils/db';
 import { useParams, useNavigate, Link } from 'react-router-dom';
 import { useChat } from '../ChatContext';
+import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
 
 const IMG_PREFIX = '_img_:';
 const FILE_PREFIX = '_file_:';
@@ -678,7 +680,7 @@ const ChatRoom = ({ session }) => {
               color: isMe ? 'white' : 'var(--text-main)',
               padding: '0.6rem 0.9rem',
               borderRadius: isMe ? '18px 18px 4px 18px' : '18px 18px 18px 4px',
-              maxWidth: '85%', wordBreak: 'break-word',
+              maxWidth: (!isMe && isAiRoom) ? '95%' : '85%', wordBreak: 'break-word',
               position: 'relative', boxShadow: '0 2px 5px rgba(0,0,0,0.1)',
             }}>
               <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'flex-start', gap: '0.5rem' }}>
@@ -699,7 +701,31 @@ const ChatRoom = ({ session }) => {
                     return isMe
                       ? <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><span style={{ fontSize: '1.4rem' }}>📎</span><span style={{ fontSize: '0.85rem', wordBreak: 'break-all' }}>{fileName}</span></div>
                       : <ReceivedFile filePath={filePath} fileName={fileName} />;
-                  })() : (
+                  })() : (!isMe && isAiRoom) ? (
+                    <ReactMarkdown
+                      remarkPlugins={[remarkGfm]}
+                      components={{
+                        p: ({ children }) => <p style={{ margin: '0 0 0.5em 0' }}>{children}</p>,
+                        ul: ({ children }) => <ul style={{ margin: '0.3em 0', paddingLeft: '1.3em' }}>{children}</ul>,
+                        ol: ({ children }) => <ol style={{ margin: '0.3em 0', paddingLeft: '1.3em' }}>{children}</ol>,
+                        li: ({ children }) => <li style={{ margin: '0.15em 0' }}>{children}</li>,
+                        code: ({ inline, children }) => inline
+                          ? <code style={{ background: 'rgba(0,0,0,0.2)', borderRadius: '4px', padding: '0 4px', fontFamily: 'monospace', fontSize: '0.88em' }}>{children}</code>
+                          : <pre style={{ background: 'rgba(0,0,0,0.25)', borderRadius: '8px', padding: '0.6em 0.8em', overflowX: 'auto', margin: '0.4em 0' }}><code style={{ fontFamily: 'monospace', fontSize: '0.85em' }}>{children}</code></pre>,
+                        strong: ({ children }) => <strong style={{ fontWeight: '700' }}>{children}</strong>,
+                        a: ({ href, children }) => <a href={href} target="_blank" rel="noopener noreferrer" style={{ color: 'var(--primary-color)', textDecoration: 'underline' }}>{children}</a>,
+                        blockquote: ({ children }) => <blockquote style={{ borderLeft: '3px solid var(--primary-color)', margin: '0.3em 0', paddingLeft: '0.8em', opacity: 0.85 }}>{children}</blockquote>,
+                        h1: ({ children }) => <h3 style={{ margin: '0.4em 0 0.2em', fontSize: '1.1em', fontWeight: '700' }}>{children}</h3>,
+                        h2: ({ children }) => <h4 style={{ margin: '0.4em 0 0.2em', fontSize: '1.05em', fontWeight: '700' }}>{children}</h4>,
+                        h3: ({ children }) => <h5 style={{ margin: '0.3em 0 0.15em', fontSize: '1em', fontWeight: '700' }}>{children}</h5>,
+                        table: ({ children }) => <table style={{ borderCollapse: 'collapse', margin: '0.4em 0', fontSize: '0.88em', width: '100%' }}>{children}</table>,
+                        th: ({ children }) => <th style={{ border: '1px solid rgba(255,255,255,0.2)', padding: '4px 8px', background: 'rgba(0,0,0,0.2)' }}>{children}</th>,
+                        td: ({ children }) => <td style={{ border: '1px solid rgba(255,255,255,0.15)', padding: '4px 8px' }}>{children}</td>,
+                      }}
+                    >
+                      {msg.text}
+                    </ReactMarkdown>
+                  ) : (
                     msg.text
                   )}
                 </div>
