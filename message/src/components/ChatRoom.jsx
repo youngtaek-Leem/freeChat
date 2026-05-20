@@ -148,6 +148,9 @@ const ReceivedFile = ({ filePath, fileName }) => {
   );
 };
 
+const AI_AGENT_ID = 'a04fce0a-02f8-4040-962a-22d7d98851f0';
+const AI_PREFIX = '_ai_:';
+
 const ChatRoom = ({ session }) => {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -157,6 +160,7 @@ const ChatRoom = ({ session }) => {
   const [sigKey, setSigKey] = useState(null);
   const [friendProfile, setFriendProfile] = useState(null);
   const [keyError, setKeyError] = useState(null);
+  const [isAiRoom, setIsAiRoom] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null); // null | { done, total }
   const messagesEndRef = useRef(null);
   const channelRef = useRef(null);
@@ -182,10 +186,15 @@ const ChatRoom = ({ session }) => {
 
       const { data } = await supabase
         .from('profiles')
-        .select('username, public_key, avatar_url')
+        .select('username, public_key, avatar_url, is_ai')
         .eq('id', friendId)
         .single();
       setFriendProfile(data);
+
+      if (data?.is_ai) {
+        setIsAiRoom(true);
+        return;
+      }
 
       if (!data?.public_key) {
         setKeyError('Friend has not set up secure messaging yet. Ask them to log in again.');
@@ -303,6 +312,32 @@ const ChatRoom = ({ session }) => {
 
     return () => supabase.removeChannel(channel);
   }, [encKey, sigKey, roomId, friendId]);
+
+  // Poll for AI Friend responses every 2 seconds
+  useEffect(() => {
+    if (!isAiRoom) return;
+    const poll = async () => {
+      const { data } = await supabase
+        .from('pending_messages')
+        .select('*')
+        .eq('room_id', roomId)
+        .eq('sender_id', AI_AGENT_ID)
+        .order('timestamp', { ascending: true });
+      if (data?.length > 0) {
+        for (const row of data) {
+          const text = row.encrypted_payload?.startsWith(AI_PREFIX)
+            ? row.encrypted_payload.slice(AI_PREFIX.length)
+            : row.encrypted_payload;
+          const newMsg = { messageId: row.message_id, roomId, sender: row.sender_id, text, timestamp: row.timestamp, read: true, recipientRead: true };
+          await dbUtils.saveMessage(newMsg);
+          setMessages(prev => prev.find(m => m.messageId === row.message_id) ? prev : [...prev, newMsg]);
+        }
+        await supabase.from('pending_messages').delete().in('id', data.map(r => r.id));
+      }
+    };
+    const id = setInterval(poll, 2000);
+    return () => clearInterval(id);
+  }, [isAiRoom, roomId]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -431,9 +466,29 @@ const ChatRoom = ({ session }) => {
 
   const sendMessage = async (e) => {
     e.preventDefault();
-    if (!input.trim() || !encKey || !sigKey) return;
+    if (!input.trim()) return;
+    if (!isAiRoom && (!encKey || !sigKey)) return;
     const ta = e.target.closest?.('form')?.querySelector('textarea');
     if (ta) ta.style.height = 'auto';
+
+    if (isAiRoom) {
+      try {
+        const messageId = window.crypto.randomUUID();
+        const timestamp = new Date().toISOString();
+        const myMessage = { messageId, roomId, sender: myId, text: input, timestamp, read: true, recipientRead: false };
+        await dbUtils.saveMessage(myMessage);
+        setMessages(prev => [...prev, myMessage]);
+        setInput('');
+        await supabase.from('pending_messages').insert({
+          sender_id: myId, receiver_id: friendId,
+          room_id: roomId, encrypted_payload: `${AI_PREFIX}${input}`,
+          message_id: messageId, timestamp,
+        });
+      } catch (err) {
+        console.error('AI send error:', err);
+      }
+      return;
+    }
 
     try {
       const encryptedText = await cryptoUtils.encrypt(input, encKey);
@@ -695,7 +750,7 @@ const ChatRoom = ({ session }) => {
           <button
             type="button"
             onClick={() => imageInputRef.current?.click()}
-            disabled={!!keyError || !!uploadProgress}
+            disabled={(!isAiRoom && !!keyError) || !!uploadProgress}
             style={{
               width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
               backgroundColor: 'rgba(255,255,255,0.1)', border: 'none', cursor: 'pointer',
@@ -707,7 +762,7 @@ const ChatRoom = ({ session }) => {
           <button
             type="button"
             onClick={() => fileInputRef.current?.click()}
-            disabled={!!keyError || !!uploadProgress}
+            disabled={(!isAiRoom && !!keyError) || !!uploadProgress}
             style={{
               width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
               backgroundColor: 'rgba(255,255,255,0.1)', border: 'none', cursor: 'pointer',
@@ -730,8 +785,8 @@ const ChatRoom = ({ session }) => {
                 sendMessage(e);
               }
             }}
-            placeholder={keyError ? 'Secure channel unavailable' : 'Type a message... (Shift+Enter: 줄바꿈)'}
-            disabled={!!keyError}
+            placeholder={(!isAiRoom && keyError) ? 'Secure channel unavailable' : 'Type a message... (Shift+Enter: 줄바꿈)'}
+            disabled={!isAiRoom && !!keyError}
             className="input-field"
             style={{
               marginBottom: 0, flexGrow: 1, borderRadius: '16px', paddingLeft: '1.25rem',
@@ -743,9 +798,9 @@ const ChatRoom = ({ session }) => {
           />
           <button type="submit" className="btn" style={{
             width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
-            backgroundColor: input.trim() && !keyError ? 'var(--primary-color)' : 'rgba(255,255,255,0.1)',
+            backgroundColor: input.trim() && (isAiRoom || !keyError) ? 'var(--primary-color)' : 'rgba(255,255,255,0.1)',
             transition: 'background-color 0.3s',
-          }} disabled={!input.trim() || !!keyError}>
+          }} disabled={!input.trim() || (!isAiRoom && !!keyError)}>
             ↑
           </button>
         </form>

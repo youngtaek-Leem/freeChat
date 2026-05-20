@@ -84,6 +84,16 @@ export const ChatProvider = ({ children }) => {
           const failedIds = [];
           for (const msg of data) {
             try {
+              if (msg.encrypted_payload?.startsWith('_ai_:')) {
+                const text = msg.encrypted_payload.slice(5);
+                await dbUtils.saveMessage({
+                  messageId: msg.message_id, roomId: msg.room_id,
+                  sender: msg.sender_id, text, timestamp: msg.timestamp,
+                  read: activeRoomRef.current === msg.room_id,
+                });
+                successfulIds.push(msg.id);
+                continue;
+              }
               const friendPubKey = await getPublicKey(msg.sender_id);
               if (!friendPubKey) {
                 // 발신자 public_key 없음 → 복호화 불가, 삭제

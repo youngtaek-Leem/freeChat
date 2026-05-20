@@ -60,6 +60,18 @@ export GEMINI_MODEL
 "$SCRIPT_DIR/.venv/bin/python3" agent_server.py &
 AGENT_PID=$!
 
+# Agent Bridge 실행 (SUPABASE_SERVICE_KEY 있을 때만)
+BRIDGE_PID=""
+if [ -n "$SUPABASE_SERVICE_KEY" ]; then
+  export SUPABASE_SERVICE_KEY
+  sleep 2  # agent_server 먼저 시작 대기
+  "$SCRIPT_DIR/.venv/bin/python3" agent_bridge.py &
+  BRIDGE_PID=$!
+  echo "AI Friend Bridge 시작됨"
+else
+  echo "⚠️  SUPABASE_SERVICE_KEY 미설정 — AI Friend Bridge 비활성"
+fi
+
 # React dev 서버 실행 (AGENT_ONLY=1 이면 생략)
 if [ -z "$AGENT_ONLY" ] && [ -d "$SCRIPT_DIR/message" ]; then
   echo "React dev 서버 시작: http://localhost:5173"
@@ -74,7 +86,7 @@ if [ -z "$AGENT_ONLY" ] && [ -d "$SCRIPT_DIR/message" ]; then
   cd "$SCRIPT_DIR"
 fi
 
-# Ctrl+C 시 두 프로세스 모두 종료
-trap "kill $AGENT_PID $VITE_PID 2>/dev/null; exit" INT TERM
+# Ctrl+C 시 모든 프로세스 종료
+trap "kill $AGENT_PID $BRIDGE_PID $VITE_PID 2>/dev/null; exit" INT TERM
 
 wait $AGENT_PID
