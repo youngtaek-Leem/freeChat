@@ -152,6 +152,7 @@ const ReceivedFile = ({ filePath, fileName }) => {
 
 const AI_AGENT_ID = 'a04fce0a-02f8-4040-962a-22d7d98851f0';
 const AI_PREFIX = '_ai_:';
+const STATUS_PREFIX = '_ai_status_:';
 
 const ChatRoom = ({ session }) => {
   const { roomId } = useParams();
@@ -331,16 +332,36 @@ const ChatRoom = ({ session }) => {
         .eq('room_id', roomId)
         .eq('sender_id', AI_AGENT_ID)
         .order('timestamp', { ascending: true });
-      if (data?.length > 0) {
-        for (const row of data) {
-          const text = row.encrypted_payload?.startsWith(AI_PREFIX)
-            ? row.encrypted_payload.slice(AI_PREFIX.length)
-            : row.encrypted_payload;
+      if (!data?.length) return;
+
+      const toDelete = [];
+      for (const row of data) {
+        const payload = row.encrypted_payload || '';
+
+        if (payload.startsWith(STATUS_PREFIX)) {
+          // 상태 메시지: 애니메이션 버블로 업데이트 (IndexedDB 저장 안 함)
+          const statusText = payload.slice(STATUS_PREFIX.length);
+          const statusMsg = { messageId: row.message_id, roomId, sender: row.sender_id, text: statusText, timestamp: row.timestamp, read: true, isStatus: true };
+          setMessages(prev => {
+            const exists = prev.find(m => m.messageId === row.message_id);
+            if (exists) return prev.map(m => m.messageId === row.message_id ? statusMsg : m);
+            return [...prev, statusMsg];
+          });
+          toDelete.push(row.id); // 브리지가 다음 업데이트 시 재삽입
+        } else if (payload.startsWith(AI_PREFIX)) {
+          // 최종 응답: 상태 메시지 제거 후 표시
+          const text = payload.slice(AI_PREFIX.length);
           const newMsg = { messageId: row.message_id, roomId, sender: row.sender_id, text, timestamp: row.timestamp, read: true, recipientRead: true };
           await dbUtils.saveMessage(newMsg);
-          setMessages(prev => prev.find(m => m.messageId === row.message_id) ? prev : [...prev, newMsg]);
+          setMessages(prev => {
+            const withoutStatus = prev.filter(m => !m.isStatus);
+            return withoutStatus.find(m => m.messageId === row.message_id) ? withoutStatus : [...withoutStatus, newMsg];
+          });
+          toDelete.push(row.id);
         }
-        await supabase.from('pending_messages').delete().in('id', data.map(r => r.id));
+      }
+      if (toDelete.length > 0) {
+        await supabase.from('pending_messages').delete().in('id', toDelete);
       }
     };
     const id = setInterval(poll, 2000);
@@ -674,6 +695,23 @@ const ChatRoom = ({ session }) => {
       }}>
         {messages.map((msg, i) => {
           const isMe = msg.sender === myId;
+
+          if (msg.isStatus) {
+            return (
+              <div key={i} style={{ alignSelf: 'flex-start', display: 'flex', alignItems: 'center', gap: '0.5rem' }}>
+                <div style={{
+                  backgroundColor: 'var(--surface-color)', color: 'var(--text-muted)',
+                  padding: '0.5rem 0.9rem', borderRadius: '18px 18px 18px 4px',
+                  fontSize: '0.85rem', boxShadow: '0 2px 5px rgba(0,0,0,0.1)',
+                  display: 'flex', alignItems: 'center', gap: '0.4rem',
+                }}>
+                  <span style={{ display: 'inline-block', animation: 'ai-spin 1s linear infinite', fontSize: '0.9rem' }}>⏳</span>
+                  {msg.text}
+                </div>
+              </div>
+            );
+          }
+
           return (
             <div key={i} style={{
               alignSelf: isMe ? 'flex-end' : 'flex-start',
