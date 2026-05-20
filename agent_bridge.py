@@ -60,7 +60,7 @@ _status_ids: dict = {}  # room_id -> status message_id
 
 
 async def download_storage_file(file_path: str) -> dict | None:
-    """Download a file from Supabase storage, return {data: base64, mime_type}."""
+    """Download a file from Supabase storage, return {data: bytes, mime_type}."""
     async with httpx.AsyncClient() as c:
         r = await c.get(
             f"{SUPABASE_URL}/storage/v1/object/chat-images/{file_path}",
@@ -69,9 +69,14 @@ async def download_storage_file(file_path: str) -> dict | None:
                 "Authorization": f"Bearer {SUPABASE_SERVICE_KEY}",
             },
         )
-        if r.status_code == 200:
-            return {"data": base64.b64encode(r.content).decode(), "mime_type": _mime_from_path(file_path)}
-        return None
+        if r.status_code != 200:
+            print(f"[bridge] storage 다운로드 실패: {r.status_code} {file_path}")
+            return None
+        # Content-Type 헤더 우선, 없으면 확장자 추측
+        ct = r.headers.get("content-type", "").split(";")[0].strip()
+        mime_type = ct if ct else _mime_from_path(file_path)
+        print(f"[bridge] storage 다운로드: {len(r.content)} bytes, mime={mime_type}")
+        return {"data": r.content, "mime_type": mime_type}
 
 
 async def _get_ws(room_id: str):
@@ -191,7 +196,12 @@ async def ask_agent(room_id: str, user_id: str, text: str, images: list | None =
         ws = await _get_ws(room_id)
         payload = {"type": "message", "text": text}
         if images:
-            payload["images"] = images
+            # data가 bytes이면 base64 문자열로 변환 (JSON 직렬화)
+            payload["images"] = [
+                {"data": base64.b64encode(img["data"]).decode() if isinstance(img["data"], bytes) else img["data"],
+                 "mime_type": img["mime_type"]}
+                for img in images
+            ]
         await ws.send(json.dumps(payload))
         accumulated = ""
         await send_status(room_id, user_id, "🤔 요청 분석 중...")

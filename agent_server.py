@@ -135,9 +135,14 @@ def _to_gemini_contents(conversation: list) -> tuple[str, list]:
                 parts.append({"text": content})
             for img in msg.get("images", []):
                 if isinstance(img, dict):
-                    parts.append({"inline_data": {"mime_type": img.get("mime_type", "image/jpeg"), "data": img["data"]}})
+                    raw = img["data"]
+                    # bytes로 변환 (base64 문자열이면 디코딩)
+                    if isinstance(raw, str):
+                        raw = base64.b64decode(raw)
+                    parts.append({"inline_data": {"mime_type": img.get("mime_type", "image/jpeg"), "data": raw}})
                 else:
-                    parts.append({"inline_data": {"mime_type": "image/jpeg", "data": img}})
+                    raw = base64.b64decode(img) if isinstance(img, str) else img
+                    parts.append({"inline_data": {"mime_type": "image/jpeg", "data": raw}})
             if parts:
                 contents.append({"role": "user", "parts": parts})
             i += 1
