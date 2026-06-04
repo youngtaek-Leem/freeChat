@@ -188,10 +188,12 @@ const ChatRoom = ({ session }) => {
   const [isAiRoom, setIsAiRoom] = useState(false);
   const [aiProcessing, setAiProcessing] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null); // null | { done, total }
+  const [showAttachMenu, setShowAttachMenu] = useState(false);
   const messagesEndRef = useRef(null);
   const channelRef = useRef(null);
   const imageInputRef = useRef(null);
   const fileInputRef = useRef(null);
+  const attachMenuRef = useRef(null);
   const { setActiveRoom, markAsRead } = useChat();
 
   const myId = session.user.id;
@@ -392,6 +394,17 @@ const ChatRoom = ({ session }) => {
     const id = setInterval(poll, 2000);
     return () => clearInterval(id);
   }, [isAiRoom, roomId]);
+
+  useEffect(() => {
+    if (!showAttachMenu) return;
+    const handler = (e) => {
+      if (attachMenuRef.current && !attachMenuRef.current.contains(e.target)) {
+        setShowAttachMenu(false);
+      }
+    };
+    document.addEventListener('mousedown', handler);
+    return () => document.removeEventListener('mousedown', handler);
+  }, [showAttachMenu]);
 
   useEffect(() => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -928,46 +941,64 @@ const ChatRoom = ({ session }) => {
         backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
         borderTop: '2px solid var(--primary-color)',
       }}>
-        <form onSubmit={sendMessage} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end' }}>
-          <input
-            ref={imageInputRef}
-            type="file"
-            accept="image/*"
-            multiple
-            style={{ display: 'none' }}
-            onChange={(e) => { if (e.target.files?.length) sendImages(e.target.files); }}
-          />
-          <input
-            ref={fileInputRef}
-            type="file"
-            multiple
-            style={{ display: 'none' }}
-            onChange={(e) => { if (e.target.files?.length) sendFiles(e.target.files); }}
-          />
+        <form onSubmit={sendMessage} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', position: 'relative' }}>
+          <input ref={imageInputRef} type="file" accept="image/*" multiple style={{ display: 'none' }}
+            onChange={(e) => { if (e.target.files?.length) { sendImages(e.target.files); setShowAttachMenu(false); } }} />
+          <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }}
+            onChange={(e) => { if (e.target.files?.length) { sendFiles(e.target.files); setShowAttachMenu(false); } }} />
+
+          {/* 첨부 메뉴 팝업 */}
+          {showAttachMenu && (
+            <div ref={attachMenuRef} style={{
+              position: 'absolute', bottom: '54px', left: 0,
+              display: 'flex', flexDirection: 'column', gap: '0.4rem',
+              background: 'var(--surface-color)', border: '1px solid var(--border-color)',
+              borderRadius: '12px', padding: '0.5rem',
+              boxShadow: '0 4px 16px rgba(0,0,0,0.15)', zIndex: 10,
+            }}>
+              <button type="button"
+                onClick={() => imageInputRef.current?.click()}
+                disabled={(!isAiRoom && !!keyError) || !!uploadProgress}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '0.5rem',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  padding: '0.4rem 0.8rem', borderRadius: '8px', color: 'var(--text-main)',
+                  fontSize: '0.9rem', whiteSpace: 'nowrap',
+                }}>
+                <span style={{ fontSize: '1.3rem' }}>📷</span> 사진
+              </button>
+              <button type="button"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={(!isAiRoom && !!keyError) || !!uploadProgress}
+                style={{
+                  display: 'flex', alignItems: 'center', gap: '0.5rem',
+                  background: 'none', border: 'none', cursor: 'pointer',
+                  padding: '0.4rem 0.8rem', borderRadius: '8px', color: 'var(--text-main)',
+                  fontSize: '0.9rem', whiteSpace: 'nowrap',
+                }}>
+                <span style={{ fontSize: '1.3rem' }}>📎</span> 파일
+              </button>
+            </div>
+          )}
+
+          {/* + 버튼 */}
           <button
             type="button"
-            onClick={() => imageInputRef.current?.click()}
+            onClick={() => setShowAttachMenu(v => !v)}
             disabled={(!isAiRoom && !!keyError) || !!uploadProgress}
             style={{
               width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
-              backgroundColor: 'rgba(255,255,255,0.1)', border: 'none', cursor: 'pointer',
-              fontSize: uploadProgress ? '0.7rem' : '1.2rem', flexShrink: 0, color: 'var(--text-main)',
+              backgroundColor: showAttachMenu ? 'var(--primary-color)' : 'var(--primary-glow)',
+              border: '1.5px solid var(--primary-color)', cursor: 'pointer', flexShrink: 0,
+              color: showAttachMenu ? 'white' : 'var(--primary-color)',
+              fontSize: uploadProgress ? '0.7rem' : '1.4rem',
+              transition: 'background-color 0.15s, transform 0.15s',
+              transform: showAttachMenu ? 'rotate(45deg)' : 'none',
             }}
           >
-            {uploadProgress ? `${uploadProgress.done}/${uploadProgress.total}` : '📷'}
+            {uploadProgress ? `${uploadProgress.done}/${uploadProgress.total}` : '+'}
           </button>
-          <button
-            type="button"
-            onClick={() => fileInputRef.current?.click()}
-            disabled={(!isAiRoom && !!keyError) || !!uploadProgress}
-            style={{
-              width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
-              backgroundColor: 'rgba(255,255,255,0.1)', border: 'none', cursor: 'pointer',
-              fontSize: '1.2rem', flexShrink: 0, color: 'var(--text-main)',
-            }}
-          >
-            📎
-          </button>
+
           <textarea
             rows={1}
             value={input}
