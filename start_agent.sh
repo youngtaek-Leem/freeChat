@@ -56,6 +56,14 @@ echo ""
 export GEMINI_API_KEY
 export GEMINI_MODEL
 
+# ANTHROPIC_API_KEY (Claude 서브에이전트용, 선택)
+if [ -n "$ANTHROPIC_API_KEY" ]; then
+  export ANTHROPIC_API_KEY
+  echo "Claude 서브에이전트: 활성 (model: ${CLAUDE_SUBAGENT_MODEL:-claude-opus-4-8-20251101})"
+else
+  echo "⚠️  ANTHROPIC_API_KEY 없음 — run_claude 툴이 제한됩니다."
+fi
+
 # 슬립 방지 (화면은 꺼져도 됨 — caffeinate -i: 시스템 idle sleep만 차단)
 CAFFEINATE_PID=""
 if command -v caffeinate &>/dev/null; then

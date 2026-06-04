@@ -605,21 +605,22 @@ TOOLS = [
             },
         },
     },
-    # ── Claude Code CLI ──
+    # ── Claude Code sub-agent ──
     {
         "type": "function",
         "function": {
             "name": "run_claude",
             "description": (
-                "Run a Claude Code CLI command and return the output. "
-                "Use this to delegate coding tasks, refactoring, file edits, or explanations to Claude Code. "
-                "The command runs in the workspace directory if set. "
+                "Run a Claude sub-agent (via Anthropic SDK) to handle coding tasks. "
+                "The sub-agent can read/write files and run bash commands. "
+                "Dangerous operations (bash, file writes) will pause and ask the user for confirmation before executing. "
+                "Use this to delegate coding tasks, refactoring, file edits, or explanations. "
                 "Example: 'Implement a login API in src/auth.py' or 'Explain what main.py does'."
             ),
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "prompt": {"type": "string", "description": "The instruction to send to Claude Code"},
+                    "prompt": {"type": "string", "description": "The instruction to send to the Claude sub-agent"},
                     "timeout": {"type": "integer", "description": "Max seconds to wait (default 300)", "default": 300},
                 },
                 "required": ["prompt"],
@@ -1009,7 +1010,9 @@ def build_system_prompt(workspace: Path | None, guide: str | None = None) -> str
         "- Always call browser_close once you have extracted the information you need from the browser\n"
         "- For simple shell operations → use execute_shell\n"
         "- When a task seems difficult, think: 'Can I write 10 lines of Python to solve this?' If yes, use run_python.\n"
-        "- After taking a screenshot or browser_screenshot, describe what you see in detail."
+        "- After taking a screenshot or browser_screenshot, describe what you see in detail.\n"
+        "- IMPORTANT: When you call run_claude, do NOT also call write_file, execute_shell, or run_python "
+        "for the same task in the same turn. run_claude handles file and shell operations internally."
     )
     if workspace:
         base += (
@@ -1030,6 +1033,177 @@ def expand(path: str, workspace: "Path | None" = None) -> Path:
     if not p.is_absolute() and workspace:
         return (workspace / p).resolve()
     return p.resolve()
+
+
+# ── Claude CLI 2단계 실행 (계획 확인 → 실행) ──────────────────────────────
+
+async def run_claude_sdk(
+    prompt: str,
+    tool_id: str,
+    workspace: "Path | None",
+    websocket,
+    incoming: asyncio.Queue,
+    stop_event: asyncio.Event,
+    timeout: int = 300,
+) -> str:
+    """Claude CLI 2단계 실행.
+    1단계: Claude에게 실행 계획만 텍스트로 설명하도록 요청
+    확인: WebSocket으로 사용자에게 계획을 보여주고 승인/거절 요청
+    2단계: 승인되면 --dangerously-skip-permissions 로 실제 실행
+    """
+    claude_bin = shutil.which("claude") or "claude"
+    cwd = str(workspace) if workspace else None
+
+    async def _send(payload: dict):
+        try:
+            await websocket.send_json(payload)
+        except Exception:
+            pass
+
+    async def _wait_confirm() -> bool:
+        pending = []
+        approved = False
+        try:
+            deadline = asyncio.get_event_loop().time() + 120
+            while True:
+                remaining = deadline - asyncio.get_event_loop().time()
+                if remaining <= 0:
+                    break
+                try:
+                    data = await asyncio.wait_for(incoming.get(), timeout=remaining)
+                except asyncio.TimeoutError:
+                    break
+                if data is None:
+                    await incoming.put(None)
+                    break
+                if data.get("type") == "confirm" and data.get("tool_call_id") == tool_id:
+                    approved = data.get("approved", False)
+                    break
+                pending.append(data)
+        finally:
+            for m in pending:
+                await incoming.put(m)
+        return approved
+
+    # ── 1단계: 계획 수립 ──────────────────────────────────────────────────
+    print(f"[run_claude] 계획 수립 시작: {prompt[:60]}")
+    await _send({"type": "progress", "icon": "🤖", "message": "Claude 실행 계획 수립 중..."})
+
+    plan_prompt = (
+        f"{prompt}\n\n"
+        "---\n"
+        "위 작업을 수행하기 위해 당신이 실행할 단계를 간결하게 나열하세요.\n"
+        "각 단계에 생성/수정할 파일 경로와 실행할 명령어를 구체적으로 포함하세요.\n"
+        "실제로 파일을 만들거나 명령을 실행하지 말고, 계획만 텍스트로 출력하세요."
+    )
+
+    try:
+        plan_proc = await asyncio.create_subprocess_exec(
+            claude_bin, "--print", plan_prompt,
+            stdin=asyncio.subprocess.DEVNULL,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+        )
+        print(f"[run_claude] claude 프로세스 시작됨 (PID={plan_proc.pid})")
+        plan_task = asyncio.create_task(plan_proc.communicate())
+        done, _ = await asyncio.wait(
+            [plan_task, asyncio.create_task(stop_event.wait())],
+            return_when=asyncio.FIRST_COMPLETED,
+            timeout=300,  # 5분
+        )
+        if stop_event.is_set():
+            plan_proc.kill()
+            print("[run_claude] 계획 수립 중 STOP 신호")
+            return "작업이 중단됐습니다."
+        if not done:  # 5분 타임아웃
+            plan_proc.kill()
+            plan_text = "(계획 수립 타임아웃)"
+            print("[run_claude] 계획 수립 타임아웃")
+        else:
+            plan_stdout, plan_stderr = plan_task.result()
+            plan_text = plan_stdout.decode(errors="replace").strip()
+            if not plan_text:
+                plan_text = plan_stderr.decode(errors="replace").strip() or "(계획 없음)"
+            print(f"[run_claude] 계획 수립 완료: {plan_text[:80]}")
+    except Exception as e:
+        plan_text = f"(계획 수립 실패: {e})"
+        print(f"[run_claude] 계획 수립 실패: {e}")
+
+    # ── 확인 요청 ─────────────────────────────────────────────────────────
+    # bridge 경유(모바일)인지 직접 WebSocket인지에 따라 처리가 다름
+    # bridge는 confirm_request를 처리할 수 없으므로 텍스트로 승인 여부를 물음
+    is_bridge = not hasattr(websocket, 'client_state')  # bridge WS vs FastAPI WS 구분
+
+    print(f"[run_claude] confirm 요청 전송 (bridge={is_bridge})")
+    await _send({
+        "type": "confirm_request",
+        "id": tool_id,
+        "name": "run_claude",
+        "args": {
+            "task": prompt,
+            "plan": plan_text,
+        },
+    })
+
+    if stop_event.is_set():
+        return "작업이 중단됐습니다."
+
+    approved = await _wait_confirm()
+    print(f"[run_claude] 사용자 응답: approved={approved}")
+    if not approved:
+        return "사용자가 취소했습니다."
+
+    # ── 2단계: 실제 실행 ──────────────────────────────────────────────────
+    await _send({"type": "progress", "icon": "🤖", "message": "Claude 작업 실행 중..."})
+
+    try:
+        exec_proc = await asyncio.create_subprocess_exec(
+            claude_bin, "--print", "--dangerously-skip-permissions", prompt,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            cwd=cwd,
+        )
+
+        async def _stream_output():
+            """stdout을 읽으면서 진행 상황을 WebSocket으로 스트리밍."""
+            accumulated = ""
+            while True:
+                line_task = asyncio.create_task(exec_proc.stdout.readline())
+                done, _ = await asyncio.wait(
+                    [line_task, asyncio.create_task(stop_event.wait())],
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if stop_event.is_set():
+                    line_task.cancel()
+                    exec_proc.kill()
+                    print("[run_claude] 실행 중 STOP 신호")
+                    break
+                line = line_task.result()
+                if not line:
+                    break
+                text = line.decode(errors="replace").rstrip()
+                if text:
+                    accumulated += text + "\n"
+                    await _send({"type": "progress", "icon": "🤖", "message": text[:120]})
+                    await _send({"type": "stream_text", "text": text})
+            return accumulated
+
+        output = await asyncio.wait_for(_stream_output(), timeout=timeout)
+        await exec_proc.wait()
+        if stop_event.is_set():
+            stop_event.clear()
+            return "작업이 중단됐습니다."
+        return output.strip() or "작업 완료"
+
+    except asyncio.TimeoutError:
+        try:
+            exec_proc.kill()
+        except Exception:
+            pass
+        return f"Error: Claude 실행 타임아웃 ({timeout}s)"
+    except Exception as e:
+        return f"Error: Claude 실행 실패 — {e}"
 
 
 # ── Tool execution ─────────────────────────────────────────────────────────
@@ -1930,6 +2104,7 @@ async def ws_endpoint(websocket: WebSocket):
                     tool_args = fn.get("arguments") or {}
                     tool_id = tc.get("id") or tool_name
                     risk = get_risk(tool_name, tool_args, workspace)
+                    print(f"[ws] tool_call: {tool_name} | risk={risk} | args={json.dumps(tool_args, ensure_ascii=False)[:120]}")
                     icon, msg = TOOL_MESSAGES.get(tool_name, ("⚙️", "처리 중"))
 
                     await safe_send({
@@ -1991,8 +2166,16 @@ async def ws_endpoint(websocket: WebSocket):
                         tool_results = None  # 루프 탈출 신호
                         break
 
+                    # run_claude → 2단계 실행 (계획 확인 → 실행)
+                    if tool_name == "run_claude":
+                        result = await run_claude_sdk(
+                            tool_args.get("prompt", ""),
+                            tool_id,
+                            workspace, websocket, incoming, stop_event,
+                            int(tool_args.get("timeout", 300)),
+                        )
                     # Run tool — long-running ones get heartbeat + stop cancellation
-                    if tool_name in LONG_RUNNING_TOOLS:
+                    elif tool_name in LONG_RUNNING_TOOLS:
                         tool_task = asyncio.create_task(run_tool(tool_name, tool_args, workspace))
                         hb_task = asyncio.create_task(_heartbeat(websocket, tool_name, step_num))
                         try:
