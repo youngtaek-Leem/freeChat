@@ -43,6 +43,28 @@ const saveFile = async (blob, fileName) => {
   URL.revokeObjectURL(url);
 };
 
+const CopyButton = ({ text, isMe }) => {
+  const [copied, setCopied] = useState(false);
+  const handle = async (e) => {
+    e.stopPropagation();
+    try { await navigator.clipboard.writeText(text); }
+    catch { const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select(); document.execCommand('copy'); document.body.removeChild(ta); }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+  return (
+    <button onClick={handle} style={{
+      background: 'none', border: 'none', cursor: 'pointer', padding: '0 2px',
+      color: copied
+        ? 'var(--primary-color)'
+        : isMe ? 'rgba(255,255,255,0.6)' : 'var(--text-muted)',
+      fontSize: '0.65rem',
+    }}>
+      {copied ? '✓' : '복사'}
+    </button>
+  );
+};
+
 const ReceivedImage = ({ filePath }) => {
   const [state, setState] = useState('idle'); // idle | loading | loaded | expired
   const [blobUrl, setBlobUrl] = useState(null);
@@ -668,9 +690,48 @@ const ChatRoom = ({ session }) => {
     if (!window.confirm('ARE YOU SURE? This will delete ALL messages for BOTH participants FOREVER.')) return;
 
     try {
+      if (isAiRoom) {
+        // 1) IndexedDB에서 현재 대화 읽기
+        const allMsgs = await dbUtils.getMessagesByRoom(roomId);
+        if (allMsgs.length > 0) {
+          // 2) JSON 파일로 다운로드 저장
+          const now = new Date();
+          const pad = n => String(n).padStart(2, '0');
+          const filename = `chat_${now.getFullYear()}${pad(now.getMonth()+1)}${pad(now.getDate())}_${pad(now.getHours())}${pad(now.getMinutes())}${pad(now.getSeconds())}.json`;
+          const exportData = {
+            saved_at: now.toISOString(),
+            room_id: roomId,
+            messages: allMsgs.map(m => ({
+              role: m.sender === myId ? 'user' : 'assistant',
+              sender: m.sender,
+              content: m.text,
+              timestamp: m.timestamp,
+            })),
+          };
+          const blob = new Blob([JSON.stringify(exportData, null, 2)], { type: 'application/json' });
+          const url = URL.createObjectURL(blob);
+          const a = document.createElement('a');
+          a.href = url;
+          a.download = filename;
+          document.body.appendChild(a);
+          a.click();
+          document.body.removeChild(a);
+          URL.revokeObjectURL(url);
+
+          // 3) agent_server conversation 초기화 신호
+          await supabase.from('pending_messages').insert({
+            sender_id: myId, receiver_id: AI_AGENT_ID,
+            room_id: roomId, encrypted_payload: '_ai_clear_history_:',
+            message_id: window.crypto.randomUUID(), timestamp: new Date().toISOString(),
+          });
+        }
+      }
+
       setMessages([]);
       await dbUtils.clearRoomMessages(roomId);
       await supabase.from('pending_messages').delete().eq('room_id', roomId);
+
+      if (isAiRoom) return;
 
       if (!isAiRoom) {
         const sender = myId;
@@ -842,15 +903,17 @@ const ChatRoom = ({ session }) => {
                 fontSize: '0.65rem',
                 color: isMe ? 'rgba(255,255,255,0.6)' : 'var(--text-muted)',
                 marginTop: '0.2rem',
-                textAlign: isMe ? 'right' : 'left',
                 display: 'flex',
                 justifyContent: isMe ? 'flex-end' : 'flex-start',
                 alignItems: 'center',
-                gap: '4px',
+                gap: '6px',
               }}>
                 {new Date(msg.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
                 {isMe && !msg.recipientRead && (
                   <span style={{ fontSize: '0.6rem' }}>✓</span>
+                )}
+                {!msg.text?.startsWith(IMG_PREFIX) && !msg.text?.startsWith(FILE_PREFIX) && msg.text && (
+                  <CopyButton text={msg.text} isMe={isMe} />
                 )}
               </div>
             </div>

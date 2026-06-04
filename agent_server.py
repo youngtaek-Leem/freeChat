@@ -51,6 +51,24 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 IS_MAC = platform.system() == "Darwin"
 IS_WIN = platform.system() == "Windows"
 
+CHAT_HISTORY_DIR = Path.home() / ".ai_chats"
+CHAT_HISTORY_DIR.mkdir(exist_ok=True)
+
+
+def _save_history(conversation: list) -> str:
+    """Save conversation (excluding system prompt) to a JSON file. Returns filename."""
+    from datetime import datetime
+    messages = [m for m in conversation if m.get("role") != "system"]
+    # Strip raw binary data (images in tool messages) to keep files small
+    clean = []
+    for m in messages:
+        entry = {k: v for k, v in m.items() if k not in ("images", "gemini_content")}
+        clean.append(entry)
+    filename = f"chat_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    path = CHAT_HISTORY_DIR / filename
+    path.write_text(json.dumps({"saved_at": datetime.now().isoformat(), "messages": clean}, ensure_ascii=False, indent=2), encoding="utf-8")
+    return filename
+
 # ── Playwright browser manager ─────────────────────────────────────────────
 
 class BrowserManager:
@@ -236,8 +254,11 @@ async def _call_gemini(conversation: list, websocket) -> tuple[str, list, object
                         })
 
             if full_text:
-                await websocket.send_json({"type": "thinking_done"})
-                await websocket.send_json({"type": "text", "text": full_text})
+                try:
+                    await websocket.send_json({"type": "thinking_done"})
+                    await websocket.send_json({"type": "text", "text": full_text})
+                except Exception:
+                    pass
 
             return full_text, tool_calls, raw_content
 
@@ -426,7 +447,8 @@ TOOLS = [
             "parameters": {
                 "type": "object",
                 "properties": {
-                    "command": {"type": "string", "description": "Command to execute"}
+                    "command": {"type": "string", "description": "Command to execute"},
+                    "timeout": {"type": "integer", "description": "Max seconds to wait (default 30)", "default": 30},
                 },
                 "required": ["command"],
             },
@@ -494,6 +516,221 @@ TOOLS = [
                     "keyword": {"type": "string", "description": "Partial app name keyword (Korean or English)"},
                 },
                 "required": ["keyword"],
+            },
+        },
+    },
+    # ── Chat history ──
+    {
+        "type": "function",
+        "function": {
+            "name": "list_chat_history",
+            "description": "List saved chat history files. Use this when the user wants to continue a previous conversation.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "load_chat_history",
+            "description": "Load a saved chat history file to continue the previous conversation.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "Filename from list_chat_history (e.g. chat_20260604_143022.json)"},
+                },
+                "required": ["filename"],
+            },
+        },
+    },
+    # ── Send file to mobile chat ──
+    {
+        "type": "function",
+        "function": {
+            "name": "send_file",
+            "description": (
+                "Send a file from the local filesystem to the mobile chat. "
+                "The file is uploaded to cloud storage and delivered as a downloadable attachment. "
+                "Use this when the user asks to 'send', 'share', or 'transfer' a file. "
+                "For multiple files or a folder, use send_files_zipped instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Absolute or workspace-relative file path to send"},
+                    "note": {"type": "string", "description": "Optional caption shown in chat alongside the file"},
+                },
+                "required": ["path"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "send_files_zipped",
+            "description": (
+                "Compress one or more files or folders into a zip archive and send it to the mobile chat. "
+                "Use this when sending multiple files, a whole directory, or when the user asks to compress before sending."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "paths": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of file/folder paths to include in the zip",
+                    },
+                    "zip_name": {"type": "string", "description": "Name for the zip file (default: archive.zip)", "default": "archive.zip"},
+                    "note": {"type": "string", "description": "Optional caption shown in chat"},
+                },
+                "required": ["paths"],
+            },
+        },
+    },
+    # ── Send screenshot to mobile chat ──
+    {
+        "type": "function",
+        "function": {
+            "name": "capture_and_send",
+            "description": (
+                "Take a screenshot of the current screen and send it as an image to the mobile chat. "
+                "Use this when the user asks to 'send a screenshot', 'show me the screen', or 'capture and share'. "
+                "Unlike take_screenshot (which only lets the AI see the screen), this delivers the image to the user's chat."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "note": {"type": "string", "description": "Optional caption for the image"}
+                },
+                "required": [],
+            },
+        },
+    },
+    # ── Claude Code CLI ──
+    {
+        "type": "function",
+        "function": {
+            "name": "run_claude",
+            "description": (
+                "Run a Claude Code CLI command and return the output. "
+                "Use this to delegate coding tasks, refactoring, file edits, or explanations to Claude Code. "
+                "The command runs in the workspace directory if set. "
+                "Example: 'Implement a login API in src/auth.py' or 'Explain what main.py does'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "prompt": {"type": "string", "description": "The instruction to send to Claude Code"},
+                    "timeout": {"type": "integer", "description": "Max seconds to wait (default 300)", "default": 300},
+                },
+                "required": ["prompt"],
+            },
+        },
+    },
+    # ── Mouse / Keyboard ──
+    {
+        "type": "function",
+        "function": {
+            "name": "mouse_move",
+            "description": "Move the mouse cursor to absolute screen coordinates",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer", "description": "X coordinate"},
+                    "y": {"type": "integer", "description": "Y coordinate"},
+                },
+                "required": ["x", "y"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mouse_click",
+            "description": "Click the mouse at given coordinates. Use take_screenshot first to find the right coordinates.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x": {"type": "integer", "description": "X coordinate"},
+                    "y": {"type": "integer", "description": "Y coordinate"},
+                    "button": {"type": "string", "description": "'left', 'right', or 'middle' (default: left)", "default": "left"},
+                    "clicks": {"type": "integer", "description": "Number of clicks: 1 for single, 2 for double (default: 1)", "default": 1},
+                },
+                "required": ["x", "y"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "mouse_drag",
+            "description": "Click and drag from one coordinate to another",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "x1": {"type": "integer", "description": "Start X"},
+                    "y1": {"type": "integer", "description": "Start Y"},
+                    "x2": {"type": "integer", "description": "End X"},
+                    "y2": {"type": "integer", "description": "End Y"},
+                },
+                "required": ["x1", "y1", "x2", "y2"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "type_text",
+            "description": "Type text using the keyboard at the current cursor position. Click the target field first with mouse_click.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "text": {"type": "string", "description": "Text to type"},
+                    "interval": {"type": "number", "description": "Seconds between keystrokes (default 0.02)", "default": 0.02},
+                },
+                "required": ["text"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "press_key",
+            "description": (
+                "Press a single key or key combination. "
+                "Key names: enter, tab, space, backspace, delete, escape, up, down, left, right, "
+                "home, end, pageup, pagedown, f1-f12, cmd, ctrl, shift, alt, option. "
+                "For combinations use hotkey instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "key": {"type": "string", "description": "Key name, e.g. 'enter', 'escape', 'tab'"},
+                    "presses": {"type": "integer", "description": "How many times to press (default 1)", "default": 1},
+                },
+                "required": ["key"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "hotkey",
+            "description": (
+                "Press a keyboard shortcut (multiple keys simultaneously). "
+                "Examples: ['cmd', 'c'] for copy, ['cmd', 'v'] for paste, "
+                "['cmd', 'z'] for undo, ['cmd', 'shift', 'z'] for redo, "
+                "['cmd', 'a'] for select all, ['ctrl', 'c'] on Windows/Linux."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keys": {
+                        "type": "array",
+                        "items": {"type": "string"},
+                        "description": "List of key names to press together, e.g. ['cmd', 'c']",
+                    },
+                },
+                "required": ["keys"],
             },
         },
     },
@@ -633,6 +870,18 @@ TOOL_MESSAGES: dict[str, tuple[str, str]] = {
     "execute_shell":    ("⚙️",  "명령 실행 중"),
     "control_app":      ("🖥️",  "앱 제어 중"),
     "run_python":       ("🐍", "Python 코드 실행 중"),
+    "list_chat_history":("📋", "대화 기록 목록 조회 중"),
+    "load_chat_history":("📂", "대화 기록 불러오는 중"),
+    "send_file":        ("📤", "파일 전송 중"),
+    "send_files_zipped":("🗜️",  "파일 압축 후 전송 중"),
+    "capture_and_send": ("📤", "화면 캡처 후 전송 중"),
+    "run_claude":       ("🤖", "Claude Code 실행 중"),
+    "mouse_move":       ("🖱️",  "마우스 이동 중"),
+    "mouse_click":      ("👆", "마우스 클릭 중"),
+    "mouse_drag":       ("✋", "드래그 중"),
+    "type_text":        ("⌨️",  "텍스트 입력 중"),
+    "press_key":        ("🔑", "키 입력 중"),
+    "hotkey":           ("⌨️",  "단축키 입력 중"),
     "browser_navigate": ("🌐", "페이지 이동 중"),
     "browser_click":    ("👆", "클릭 중"),
     "browser_fill":     ("⌨️",  "텍스트 입력 중"),
@@ -646,6 +895,7 @@ TOOL_MESSAGES: dict[str, tuple[str, str]] = {
 LONG_RUNNING_TOOLS = {
     "web_search", "fetch_webpage", "run_python",
     "execute_shell", "browser_navigate", "take_screenshot",
+    "run_claude", "capture_and_send", "send_file", "send_files_zipped",
 }
 
 
@@ -657,13 +907,16 @@ async def _heartbeat(websocket: WebSocket, tool_name: str, step: int):
         while True:
             await asyncio.sleep(1.5)
             dots = (dots % 3) + 1
-            await websocket.send_json({
-                "type": "progress",
-                "step": step,
-                "tool": tool_name,
-                "icon": icon,
-                "message": base + " " + "·" * dots,
-            })
+            try:
+                await websocket.send_json({
+                    "type": "progress",
+                    "step": step,
+                    "tool": tool_name,
+                    "icon": icon,
+                    "message": base + " " + "·" * dots,
+                })
+            except Exception:
+                return  # WS closed — stop heartbeat silently
     except asyncio.CancelledError:
         pass
 
@@ -679,6 +932,18 @@ RISK = {
     "find_app":  "low",
     "web_search": "low",
     "take_screenshot": "low",
+    "list_chat_history":"low",
+    "load_chat_history":"low",
+    "send_file":        "medium",
+    "send_files_zipped":"medium",
+    "capture_and_send": "low",
+    "run_claude":   "medium",
+    "mouse_move":   "low",
+    "mouse_click":  "medium",
+    "mouse_drag":   "medium",
+    "type_text":    "medium",
+    "press_key":    "low",
+    "hotkey":       "medium",
     "browser_navigate": "low",
     "browser_get_text": "low",
     "browser_screenshot": "low",
@@ -964,23 +1229,260 @@ async def run_tool(name: str, args: dict, workspace: "Path | None" = None) -> st
                 except Exception:
                     pass
 
+        elif name == "list_chat_history":
+            # ~/.ai_chats/ 와 ~/Downloads/ 모두 검색
+            search_dirs = [CHAT_HISTORY_DIR, Path.home() / "Downloads"]
+            files = []
+            for d in search_dirs:
+                files.extend(d.glob("chat_*.json"))
+            files = sorted(set(files), key=lambda f: f.stat().st_mtime, reverse=True)
+            if not files:
+                return "저장된 대화 기록이 없습니다."
+            lines = []
+            for f in files[:20]:
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    saved_at = data.get("saved_at", "")[:19].replace("T", " ")
+                    msg_count = len(data.get("messages", []))
+                    preview = next((
+                        (m.get("content") or m.get("text") or "")[:40]
+                        for m in data.get("messages", [])
+                        if m.get("role") == "user"
+                    ), "")
+                    lines.append(f"{f.name}  [{saved_at}]  {msg_count}개 메시지  \"{preview}...\"  ({f.parent})")
+                except Exception:
+                    lines.append(str(f))
+            return "\n".join(lines)
+
+        elif name == "load_chat_history":
+            filename = args["filename"].strip()
+            if not filename.endswith(".json"):
+                filename += ".json"
+            # 검색 순서: ~/.ai_chats/ → ~/Downloads/ → 절대경로
+            search_dirs = [CHAT_HISTORY_DIR, Path.home() / "Downloads"]
+            path = None
+            for d in search_dirs:
+                candidate = d / filename
+                if candidate.exists():
+                    path = candidate
+                    break
+            # 절대/상대 경로로 직접 지정한 경우
+            if path is None:
+                direct = Path(filename).expanduser()
+                if direct.exists():
+                    path = direct
+            if path is None:
+                return f"파일을 찾을 수 없습니다: {filename}\n검색 위치: {', '.join(str(d) for d in search_dirs)}"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            raw_messages = data.get("messages", [])
+            # content/text 필드 통일, 불필요한 필드 제거
+            messages = []
+            for m in raw_messages:
+                role = m.get("role", "user")
+                content = m.get("content") or m.get("text") or ""
+                if role in ("user", "assistant") and content:
+                    messages.append({"role": role, "content": content})
+            return json.dumps({"__type": "load_history", "messages": messages, "saved_at": data.get("saved_at", ""), "filename": path.name})
+
+        elif name == "send_file":
+            p = expand(args["path"], workspace)
+            if not p.exists() or not p.is_file():
+                return f"Error: file not found: {p}"
+            size = p.stat().st_size
+            if size > 50 * 1024 * 1024:  # 50 MB hard limit
+                return f"Error: file too large ({size / 1024 / 1024:.1f} MB). Use send_files_zipped with compression."
+            data = p.read_bytes()
+            b64 = base64.b64encode(data).decode()
+            note = args.get("note") or f"{p.name} ({size / 1024:.1f} KB)"
+            return json.dumps({"__type": "file_output", "data": b64, "filename": p.name, "note": note})
+
+        elif name == "send_files_zipped":
+            import zipfile, io
+            paths = [expand(pp, workspace) for pp in args["paths"]]
+            zip_name = (args.get("zip_name") or "archive.zip").strip()
+            if not zip_name.endswith(".zip"):
+                zip_name += ".zip"
+
+            buf = io.BytesIO()
+            with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+                for p in paths:
+                    if not p.exists():
+                        return f"Error: path not found: {p}"
+                    if p.is_file():
+                        zf.write(p, p.name)
+                    else:
+                        for child in p.rglob("*"):
+                            if child.is_file():
+                                zf.write(child, child.relative_to(p.parent))
+            zip_bytes = buf.getvalue()
+            if zip_bytes.__len__() > 50 * 1024 * 1024:
+                return f"Error: compressed archive too large ({len(zip_bytes) / 1024 / 1024:.1f} MB)."
+            b64 = base64.b64encode(zip_bytes).decode()
+            note = args.get("note") or f"{zip_name} ({len(zip_bytes) / 1024:.1f} KB)"
+            return json.dumps({"__type": "file_output", "data": b64, "filename": zip_name, "note": note})
+
+        elif name == "capture_and_send":
+            # Reuse take_screenshot logic, but mark as image_output so bridge sends to mobile
+            screenshot_result = await run_tool("take_screenshot", {"note": args.get("note", "Screen capture")}, workspace)
+            try:
+                parsed = json.loads(screenshot_result)
+                if parsed.get("__type") == "screenshot":
+                    return json.dumps({
+                        "__type": "image_output",
+                        "data": parsed["data"],
+                        "note": parsed.get("note", "Screen capture"),
+                    })
+            except Exception:
+                pass
+            return screenshot_result  # error string passthrough
+
         # ── System ──
         elif name == "execute_shell":
             cmd = args["command"]
+            timeout = int(args.get("timeout", 30))
             cwd = str(workspace) if workspace else None
             if IS_WIN:
                 proc = subprocess.run(
                     ["powershell", "-NoProfile", "-Command", cmd],
-                    capture_output=True, text=True, timeout=30, cwd=cwd,
+                    capture_output=True, text=True, timeout=timeout, cwd=cwd,
                 )
             else:
                 proc = subprocess.run(
-                    cmd, shell=True, capture_output=True, text=True, timeout=30, cwd=cwd,
+                    cmd, shell=True, capture_output=True, text=True, timeout=timeout, cwd=cwd,
                 )
             out = (proc.stdout + proc.stderr).strip()
             if len(out) > 4000:
                 out = out[:4000] + "... (truncated)"
             return out or "(no output)"
+
+        elif name == "run_claude":
+            prompt = args["prompt"]
+            timeout = int(args.get("timeout", 300))
+            cwd = str(workspace) if workspace else None
+            claude_bin = shutil.which("claude") or "claude"
+            proc = await asyncio.create_subprocess_exec(
+                claude_bin, "--print", prompt,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+            try:
+                stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)
+            except asyncio.TimeoutError:
+                proc.kill()
+                return f"Error: claude timed out after {timeout}s"
+            out = (stdout.decode(errors="replace") + stderr.decode(errors="replace")).strip()
+            if len(out) > 6000:
+                out = out[:6000] + "\n... (truncated)"
+            return out or "(no output)"
+
+        elif name == "mouse_move":
+            import pyautogui
+            pyautogui.moveTo(args["x"], args["y"], duration=0.2)
+            return f"Mouse moved to ({args['x']}, {args['y']})"
+
+        elif name == "mouse_click":
+            x, y = args["x"], args["y"]
+            button = args.get("button", "left")
+            clicks = int(args.get("clicks", 1))
+            if IS_MAC:
+                btn_num = 1 if button == "left" else 2 if button == "right" else 3
+                script = (
+                    f'tell application "System Events"\n'
+                    f'  set pos to {{{x}, {y}}}\n'
+                )
+                for _ in range(clicks):
+                    script += f'  click at pos\n'
+                script += 'end tell'
+                subprocess.run(["osascript", "-e", script], capture_output=True)
+            else:
+                import pyautogui
+                pyautogui.click(x, y, clicks=clicks, button=button, interval=0.1)
+            return f"Clicked {button}×{clicks} at ({x}, {y})"
+
+        elif name == "mouse_drag":
+            import pyautogui
+            pyautogui.moveTo(args["x1"], args["y1"], duration=0.2)
+            pyautogui.dragTo(args["x2"], args["y2"], duration=0.4, button="left")
+            return f"Dragged ({args['x1']},{args['y1']}) → ({args['x2']},{args['y2']})"
+
+        elif name == "type_text":
+            text = args["text"]
+            if IS_MAC:
+                # 1) pbcopy로 클립보드에 UTF-8 텍스트 설정
+                subprocess.run(["pbcopy"], input=text.encode("utf-8"), capture_output=True)
+                await asyncio.sleep(0.15)
+                # 2) System Events로 Cmd+V 전송 — 포커스된 앱에 확실히 전달됨
+                subprocess.run(
+                    ["osascript", "-e",
+                     'tell application "System Events" to keystroke "v" using command down'],
+                    capture_output=True,
+                )
+            elif IS_WIN:
+                subprocess.run(
+                    ["powershell", "-NoProfile", "-Command",
+                     "Add-Type -AssemblyName System.Windows.Forms; "
+                     "[System.Windows.Forms.Clipboard]::SetText($input)"],
+                    input=text, capture_output=True, text=True,
+                )
+                import pyautogui
+                pyautogui.hotkey("ctrl", "v")
+            else:
+                subprocess.run(["xdotool", "type", "--clearmodifiers", text], capture_output=True)
+            return f"Typed {len(text)} characters"
+
+        elif name == "press_key":
+            key = args["key"]
+            presses = int(args.get("presses", 1))
+            if IS_MAC:
+                # 특수키는 key code, 일반 문자는 keystroke
+                KEYCODE_MAP = {
+                    "enter": 36, "return": 36,
+                    "tab": 48, "space": 49,
+                    "backspace": 51, "delete": 51,
+                    "escape": 53,
+                    "left": 123, "right": 124, "down": 125, "up": 126,
+                    "home": 115, "end": 119,
+                    "pageup": 116, "pagedown": 121,
+                    "f1": 122, "f2": 120, "f3": 99, "f4": 118,
+                    "f5": 96, "f6": 97, "f7": 98, "f8": 100,
+                    "f9": 101, "f10": 109, "f11": 103, "f12": 111,
+                }
+                k = key.lower()
+                if k in KEYCODE_MAP:
+                    stmt = f'key code {KEYCODE_MAP[k]}'
+                else:
+                    stmt = f'keystroke "{k}"'
+                script = (
+                    f'tell application "System Events"\n'
+                    f'  repeat {presses} times\n'
+                    f'    {stmt}\n'
+                    f'  end repeat\n'
+                    f'end tell'
+                )
+                subprocess.run(["osascript", "-e", script], capture_output=True)
+            else:
+                import pyautogui
+                pyautogui.press(key, presses=presses)
+            return f"Pressed '{key}' × {presses}"
+
+        elif name == "hotkey":
+            keys = args["keys"]
+            if IS_MAC:
+                MOD_MAP = {"cmd": "command down", "ctrl": "control down",
+                           "shift": "shift down", "alt": "option down", "option": "option down"}
+                mods = [MOD_MAP[k] for k in keys[:-1] if k in MOD_MAP]
+                char = keys[-1]
+                using = (", ".join(mods)) if mods else ""
+                script = (
+                    f'tell application "System Events" to keystroke "{char}"'
+                    + (f' using {{{using}}}' if using else '')
+                )
+                subprocess.run(["osascript", "-e", script], capture_output=True)
+            else:
+                import pyautogui
+                pyautogui.hotkey(*keys)
+            return f"Hotkey: {' + '.join(keys)}"
 
         elif name == "control_app":
             script = args["script"]
@@ -1284,8 +1786,19 @@ def _make_tool_result_msg(result: str, tool_name: str = "unknown") -> dict:
     """Convert tool result string to conversation message, handling screenshots."""
     try:
         parsed = json.loads(result)
-        if isinstance(parsed, dict) and parsed.get("__type") == "screenshot":
-            return {"role": "tool", "name": tool_name, "content": parsed.get("note", "Screenshot"), "images": [parsed["data"]]}
+        if isinstance(parsed, dict):
+            t = parsed.get("__type")
+            if t == "screenshot":
+                return {"role": "tool", "name": tool_name, "content": parsed.get("note", "Screenshot"), "images": [parsed["data"]]}
+            if t in ("file_output", "image_output"):
+                note = parsed.get("note") or parsed.get("filename") or t
+                return {"role": "tool", "name": tool_name, "content": f"Sent successfully: {note}"}
+            if t == "load_history":
+                # Inject history messages so AI has full context
+                msgs = parsed.get("messages", [])
+                saved_at = parsed.get("saved_at", "")[:19].replace("T", " ")
+                summary = f"대화 기록 '{parsed.get('filename')}' 불러옴 ({saved_at}, {len(msgs)}개 메시지)"
+                return {"role": "tool", "name": tool_name, "content": summary, "__inject": msgs}
     except (json.JSONDecodeError, KeyError):
         pass
     return {"role": "tool", "name": tool_name, "content": result}
@@ -1311,6 +1824,13 @@ async def ws_endpoint(websocket: WebSocket):
 
     recv_task = asyncio.create_task(recv_loop())
 
+    async def safe_send(payload: dict):
+        """Send JSON, silently ignore errors if the connection is already closed."""
+        try:
+            await websocket.send_json(payload)
+        except Exception:
+            pass
+
     workspace: Path | None = None
     guide: str | None = None
     conversation = [{"role": "system", "content": build_system_prompt(workspace, guide)}]
@@ -1327,23 +1847,31 @@ async def ws_endpoint(websocket: WebSocket):
                     workspace = None
                     guide = None
                     conversation[0] = {"role": "system", "content": build_system_prompt(None, None)}
-                    await websocket.send_json({"type": "workspace_set", "path": None, "has_guide": False})
+                    await safe_send({"type": "workspace_set", "path": None, "has_guide": False})
                 else:
                     try:
                         p = expand(raw)
                         if not p.is_dir():
-                            await websocket.send_json({"type": "workspace_error", "message": f"존재하지 않는 폴더: {p}"})
+                            await safe_send({"type": "workspace_error", "message": f"존재하지 않는 폴더: {p}"})
                         else:
                             workspace = p
                             guide = read_guide(workspace)
                             conversation[0] = {"role": "system", "content": build_system_prompt(workspace, guide)}
-                            await websocket.send_json({
+                            await safe_send({
                                 "type": "workspace_set",
                                 "path": str(workspace),
                                 "has_guide": guide is not None,
                             })
                     except Exception as e:
-                        await websocket.send_json({"type": "workspace_error", "message": str(e)})
+                        await safe_send({"type": "workspace_error", "message": str(e)})
+                continue
+
+            if data.get("type") == "clear_history":
+                filename = None
+                if len(conversation) > 1:  # system prompt 외 메시지가 있을 때만 저장
+                    filename = _save_history(conversation)
+                conversation = [{"role": "system", "content": build_system_prompt(workspace, guide)}]
+                await safe_send({"type": "history_cleared", "saved_as": filename})
                 continue
 
             if data.get("type") != "message":
@@ -1364,7 +1892,7 @@ async def ws_endpoint(websocket: WebSocket):
                 # Stop 체크 — 루프 진입 시
                 if stop_event.is_set():
                     stop_event.clear()
-                    await websocket.send_json({"type": "stopped", "message": "작업이 중단됐습니다."})
+                    await safe_send({"type": "stopped", "message": "작업이 중단됐습니다."})
                     break
 
                 full_content = ""
@@ -1372,16 +1900,16 @@ async def ws_endpoint(websocket: WebSocket):
                 raw_model_content = None
 
                 # LLM 추론 시작 알림
-                await websocket.send_json({"type": "thinking", "message": "요청 분석 중..."})
+                await safe_send({"type": "thinking", "message": "요청 분석 중..."})
 
                 try:
                     full_content, tool_calls, raw_model_content = await _call_gemini(conversation, websocket)
                 except Exception as e:
-                    await websocket.send_json({"type": "error", "message": f"Gemini error: {e}"})
+                    await safe_send({"type": "error", "message": f"Gemini error: {e}"})
                     break
 
                 # thinking 버블 제거 (텍스트 없이 tool_calls만 온 경우)
-                await websocket.send_json({"type": "thinking_done"})
+                await safe_send({"type": "thinking_done"})
 
                 assistant_msg: dict = {"role": "assistant", "content": full_content}
                 if tool_calls:
@@ -1391,7 +1919,7 @@ async def ws_endpoint(websocket: WebSocket):
                 conversation.append(assistant_msg)
 
                 if not tool_calls:
-                    await websocket.send_json({"type": "done"})
+                    await safe_send({"type": "done"})
                     break
 
                 tool_results = []
@@ -1404,7 +1932,7 @@ async def ws_endpoint(websocket: WebSocket):
                     risk = get_risk(tool_name, tool_args, workspace)
                     icon, msg = TOOL_MESSAGES.get(tool_name, ("⚙️", "처리 중"))
 
-                    await websocket.send_json({
+                    await safe_send({
                         "type": "tool_start",
                         "id": tool_id,
                         "name": tool_name,
@@ -1412,7 +1940,7 @@ async def ws_endpoint(websocket: WebSocket):
                         "risk": risk,
                     })
                     # Initial progress event
-                    await websocket.send_json({
+                    await safe_send({
                         "type": "progress",
                         "step": step_num,
                         "tool": tool_name,
@@ -1421,7 +1949,7 @@ async def ws_endpoint(websocket: WebSocket):
                     })
 
                     if risk == "high":
-                        await websocket.send_json({
+                        await safe_send({
                             "type": "confirm_request",
                             "id": tool_id,
                             "name": tool_name,
@@ -1452,14 +1980,14 @@ async def ws_endpoint(websocket: WebSocket):
 
                         if not approved:
                             result = "Cancelled by user."
-                            await websocket.send_json({"type": "tool_result", "id": tool_id, "name": tool_name, "result": result, "success": False})
+                            await safe_send({"type": "tool_result", "id": tool_id, "name": tool_name, "result": result, "success": False})
                             tool_results.append({"role": "tool", "name": tool_name, "content": result})
                             continue
 
                     # Stop 체크 — 도구 실행 직전
                     if stop_event.is_set():
                         stop_event.clear()
-                        await websocket.send_json({"type": "stopped", "message": "작업이 중단됐습니다."})
+                        await safe_send({"type": "stopped", "message": "작업이 중단됐습니다."})
                         tool_results = None  # 루프 탈출 신호
                         break
 
@@ -1475,7 +2003,7 @@ async def ws_endpoint(websocket: WebSocket):
                             if stop_event.is_set():
                                 tool_task.cancel()
                                 stop_event.clear()
-                                await websocket.send_json({"type": "stopped", "message": "작업이 중단됐습니다."})
+                                await safe_send({"type": "stopped", "message": "작업이 중단됐습니다."})
                                 tool_results = None
                             else:
                                 result = tool_task.result()
@@ -1489,25 +2017,66 @@ async def ws_endpoint(websocket: WebSocket):
                     # Build the event sent to the frontend — strip raw image data, send separately
                     try:
                         parsed_result = json.loads(result)
-                        if isinstance(parsed_result, dict) and parsed_result.get("__type") == "screenshot":
-                            await websocket.send_json({
+                        rtype = parsed_result.get("__type") if isinstance(parsed_result, dict) else None
+                        if rtype == "file_output":
+                            await safe_send({
+                                "type": "file_output",
+                                "data": parsed_result["data"],
+                                "filename": parsed_result.get("filename", "file"),
+                                "note": parsed_result.get("note", ""),
+                            })
+                            await safe_send({
+                                "type": "tool_result",
+                                "id": tool_id,
+                                "name": tool_name,
+                                "result": parsed_result.get("note", "File sent"),
+                                "success": True,
+                            })
+                        elif rtype == "image_output":
+                            # Send image to frontend AND signal bridge to deliver to mobile chat
+                            await safe_send({
+                                "type": "image_output",
+                                "data": parsed_result["data"],
+                                "note": parsed_result.get("note", "Screen capture"),
+                            })
+                            await safe_send({
+                                "type": "tool_result",
+                                "id": tool_id,
+                                "name": tool_name,
+                                "result": parsed_result.get("note", "Screen capture"),
+                                "image": parsed_result["data"],
+                                "success": True,
+                            })
+                        elif rtype == "screenshot":
+                            await safe_send({
                                 "type": "tool_result",
                                 "id": tool_id,
                                 "name": tool_name,
                                 "result": parsed_result.get("note", "Screenshot captured"),
-                                "image": parsed_result["data"],  # frontend can render this
+                                "image": parsed_result["data"],
                                 "success": True,
                             })
                         else:
-                            await websocket.send_json({"type": "tool_result", "id": tool_id, "name": tool_name, "result": result, "success": True})
+                            await safe_send({"type": "tool_result", "id": tool_id, "name": tool_name, "result": result, "success": True})
                     except (json.JSONDecodeError, KeyError):
-                        await websocket.send_json({"type": "tool_result", "id": tool_id, "name": tool_name, "result": result, "success": True})
+                        await safe_send({"type": "tool_result", "id": tool_id, "name": tool_name, "result": result, "success": True})
 
                     tool_results.append(_make_tool_result_msg(result, tool_name))
 
                 if tool_results is None:
                     break  # stop 신호로 인한 중단
-                conversation.extend(tool_results)
+
+                # load_history 결과가 있으면 system prompt 바로 뒤에 히스토리 주입
+                injected = []
+                plain_results = []
+                for tr in tool_results:
+                    inject = tr.pop("__inject", None)
+                    if inject:
+                        injected = inject
+                    plain_results.append(tr)
+                if injected:
+                    conversation[1:1] = injected  # system prompt 다음에 삽입
+                conversation.extend(plain_results)
 
     except WebSocketDisconnect:
         pass
@@ -1524,4 +2093,5 @@ if __name__ == "__main__":
         app, host="127.0.0.1", port=3001, log_level="info",
         ssl_certfile=ssl_cert or None,
         ssl_keyfile=ssl_key or None,
+        ws_max_size=64 * 1024 * 1024,  # 64MB — large enough for file transfers
     )

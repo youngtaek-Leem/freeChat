@@ -1,0 +1,34 @@
+[Folders]
+1Password_export
+AI_agent
+AI_Friend
+AntiGravity
+AUTOSAR
+Claude_Code
+ClaudeCowork
+Codex
+Hogwarts Legacy
+macTest
+SC584_EZ_Board
+web_calendar
+사용자 지정 Office 서식 파일
+
+[Files]
+.DS_Store
+.localized
+2018_RIDE-9_SetupGuide_v2.0_EN.pdf
+2024 전문세 달력.pdf
+605-00-217_RevA-38-Tuning-Guide.pdf
+605-00-252-DHX-Tuning-Guide-revA.pdf
+attach.html
+AUTOSAR.zip
+MY21_altitude_manual_Alloy_web_r3.pdf
+PRS Hyundai HBNO3 JG Amplifier 2.1.docx
+PRS Hyundai HBNO3 RS4PE Amplifier 1.8.docx
+SC584_EZ_Board.zip
+계곡물소리.m4v
+보수는 어떻게 국민을 속이는가.pdf
+스크린샷 2026-03-26 오전 12.04.18.png
+지적 대화를 위한 넓고 얕은 지식.pdf
+화면 기록 2026-04-18 오전 1.15.09.mov
+화면 기록 2026-04-18 오전 12.58.03.mov

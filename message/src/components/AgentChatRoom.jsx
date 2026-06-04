@@ -139,6 +139,57 @@ function AutomationGrantPanel({ onClose }) {
   );
 }
 
+function CopyWrapper({ text, align, children }) {
+  const [copied, setCopied] = useState(false);
+
+  const handleCopy = async (e) => {
+    e.stopPropagation();
+    try {
+      await navigator.clipboard.writeText(text || '');
+    } catch {
+      const ta = document.createElement('textarea');
+      ta.value = text || '';
+      document.body.appendChild(ta);
+      ta.select();
+      document.execCommand('copy');
+      document.body.removeChild(ta);
+    }
+    setCopied(true);
+    setTimeout(() => setCopied(false), 1500);
+  };
+
+  const isRight = align === 'flex-end';
+
+  return (
+    <div style={{
+      alignSelf: align,
+      maxWidth: '85%',
+      display: 'flex',
+      flexDirection: 'column',
+      alignItems: isRight ? 'flex-end' : 'flex-start',
+      gap: '2px',
+    }}>
+      {children}
+      <button
+        onClick={handleCopy}
+        style={{
+          background: copied ? 'var(--primary-color)' : 'rgba(255,255,255,0.12)',
+          border: '1px solid rgba(255,255,255,0.2)',
+          borderRadius: '5px',
+          color: copied ? 'white' : 'rgba(255,255,255,0.7)',
+          fontSize: '0.7rem',
+          padding: '2px 8px',
+          cursor: 'pointer',
+          whiteSpace: 'nowrap',
+          transition: 'all 0.15s',
+        }}
+      >
+        {copied ? '✓ 복사됨' : '복사'}
+      </button>
+    </div>
+  );
+}
+
 function WorkspacePicker({ workspace, hasGuide, onSet, onClear }) {
   const [open, setOpen] = useState(false);
   const [inputPath, setInputPath] = useState('');
@@ -556,6 +607,9 @@ export default function AgentChatRoom() {
         setMessages(prev => prev.filter(m => m.type !== 'progress' && m.type !== 'thinking'));
         addMsg({ type: 'error', text: data.message });
         setAgentBusy(false);
+      } else if (data.type === 'history_cleared') {
+        const saved = data.saved_as ? `💾 대화가 ${data.saved_as} 에 저장됐습니다.` : null;
+        setMessages(saved ? [{ id: crypto.randomUUID(), type: 'assistant', text: saved }] : []);
       }
     };
   }, [addMsg, updateLastTool]);
@@ -606,7 +660,13 @@ export default function AgentChatRoom() {
     addMsg({ type: 'stopped', text: '⏹ 작업이 중단됐습니다.' });
   };
 
-  const clearChat = () => setMessages([]);
+  const clearChat = () => {
+    if (wsRef.current?.readyState === WebSocket.OPEN) {
+      wsRef.current.send(JSON.stringify({ type: 'clear_history' }));
+    } else {
+      setMessages([]);
+    }
+  };
 
   const handleSetWorkspace = (path) => {
     if (!wsRef.current) return;
@@ -733,27 +793,28 @@ export default function AgentChatRoom() {
 
         {messages.map((msg) => {
           if (msg.type === 'user') return (
-            <div key={msg.id} style={{
-              alignSelf: 'flex-end',
-              backgroundColor: 'var(--primary-color)', color: 'white',
-              padding: '0.6rem 0.9rem',
-              borderRadius: '18px 18px 4px 18px',
-              maxWidth: '85%', wordBreak: 'break-word',
-              boxShadow: '0 2px 5px rgba(0,0,0,0.1)',
-              fontSize: '0.95rem', lineHeight: '1.4',
-            }}>{msg.text}</div>
+            <CopyWrapper key={msg.id} text={msg.text} align="flex-end">
+              <div style={{
+                backgroundColor: 'var(--primary-color)', color: 'white',
+                padding: '0.6rem 0.9rem',
+                borderRadius: '18px 18px 4px 18px',
+                maxWidth: '85%', wordBreak: 'break-word',
+                boxShadow: '0 2px 5px rgba(0,0,0,0.1)',
+                fontSize: '0.95rem', lineHeight: '1.4',
+              }}>{msg.text}</div>
+            </CopyWrapper>
           );
 
           if (msg.type === 'assistant') return (
-            <div key={msg.id} style={{
-              alignSelf: 'flex-start',
-              backgroundColor: 'var(--surface-color)',
-              padding: '0.6rem 0.9rem',
-              borderRadius: '18px 18px 18px 4px',
-              maxWidth: '85%', wordBreak: 'break-word',
-              boxShadow: '0 2px 5px rgba(0,0,0,0.1)',
-              fontSize: '0.9rem', lineHeight: '1.6',
-            }}>
+            <CopyWrapper key={msg.id} text={msg.text} align="flex-start">
+              <div style={{
+                backgroundColor: 'var(--surface-color)',
+                padding: '0.6rem 0.9rem',
+                borderRadius: '18px 18px 18px 4px',
+                maxWidth: '85%', wordBreak: 'break-word',
+                boxShadow: '0 2px 5px rgba(0,0,0,0.1)',
+                fontSize: '0.9rem', lineHeight: '1.6',
+              }}>
               <ReactMarkdown
                 remarkPlugins={[remarkGfm]}
                 components={{
@@ -786,7 +847,8 @@ export default function AgentChatRoom() {
               >
                 {deLatex(msg.text)}
               </ReactMarkdown>
-            </div>
+              </div>
+            </CopyWrapper>
           );
 
           if (msg.type === 'tool') return <ToolBubble key={msg.id} item={msg} />;

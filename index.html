@@ -1,0 +1,66 @@
+
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <title>오늘의 날씨와 시간</title>
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+            height: 100vh;
+            display: flex;
+            justify-content: center;
+            align-items: center;
+            font-family: 'Pretendard', sans-serif;
+            color: white;
+            /* 멋진 자연 배경 이미지 (언스플래시) */
+            background: url('https://images.unsplash.com/photo-1506744038136-46273834b3fb?q=80&w=2070&auto=format&fit=crop') no-repeat center center fixed;
+            background-size: cover;
+        }
+        .container {
+            background: rgba(0, 0, 0, 0.4);
+            padding: 50px;
+            border-radius: 30px;
+            backdrop-filter: blur(15px);
+            text-align: center;
+            border: 1px solid rgba(255, 255, 255, 0.2);
+        }
+        #time { font-size: 5rem; margin: 0; font-weight: bold; }
+        #date { font-size: 1.5rem; margin-bottom: 20px; opacity: 0.9; }
+        #weather-box { font-size: 2rem; margin-top: 20px; display: flex; align-items: center; justify-content: center; gap: 15px; }
+        .icon { font-size: 3rem; }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1 id="time">00:00:00</h1>
+        <p id="date">날짜를 불러오는 중...</p>
+        <div id="weather-box">
+            <span class="icon" id="weather-icon">☀️</span>
+            <span id="temp">--°</span>
+            <span id="status">날씨 불러오는 중...</span>
+        </div>
+    </div>
+    <script>
+        function updateDateTime() {
+            const now = new Date();
+            document.getElementById('time').innerText = now.toLocaleTimeString('ko-KR', { hour12: false });
+            document.getElementById('date').innerText = now.toLocaleDateString('ko-KR', { 
+                year: 'numeric', month: 'long', day: 'numeric', weekday: 'long' 
+            });
+        }
+        
+        // 날씨 데이터 대입 (네이버에서 가져온 값)
+        function updateWeather() {
+            document.getElementById('temp').innerText = "21.2°";
+            document.getElementById('status').innerText = "맑음";
+            document.getElementById('weather-icon').innerText = "☀️";
+        }
+
+        setInterval(updateDateTime, 1000);
+        updateDateTime();
+        updateWeather();
+    </script>
+</body>
+</html>
