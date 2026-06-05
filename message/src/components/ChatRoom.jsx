@@ -176,6 +176,7 @@ const AI_AGENT_ID = 'a04fce0a-02f8-4040-962a-22d7d98851f0';
 const AI_PREFIX = '_ai_:';
 const STATUS_PREFIX = '_ai_status_:';
 
+
 const ChatRoom = ({ session }) => {
   const { roomId } = useParams();
   const navigate = useNavigate();
@@ -347,9 +348,52 @@ const ChatRoom = ({ session }) => {
     return () => supabase.removeChannel(channel);
   }, [encKey, sigKey, roomId, friendId]);
 
-  // Poll for AI Friend responses every 2 seconds
+  // 알림 권한 요청 (최초 1회)
+  useEffect(() => {
+    if ('Notification' in window && Notification.permission === 'default') {
+      Notification.requestPermission();
+    }
+  }, []);
+
+  // AI 메시지 처리 공통 함수
+  const processAiRow = async (row) => {
+    const payload = row.encrypted_payload || '';
+    if (payload.startsWith(STATUS_PREFIX)) {
+      const statusText = payload.slice(STATUS_PREFIX.length);
+      const statusMsg = { messageId: row.message_id, roomId, sender: row.sender_id, text: statusText, timestamp: row.timestamp, read: true, isStatus: true };
+      setAiProcessing(true);
+      setMessages(prev => {
+        const exists = prev.find(m => m.messageId === row.message_id);
+        if (exists) return prev.map(m => m.messageId === row.message_id ? statusMsg : m);
+        return [...prev, statusMsg];
+      });
+      await supabase.from('pending_messages').delete().eq('id', row.id);
+    } else if (payload.startsWith(AI_PREFIX)) {
+      const text = payload.slice(AI_PREFIX.length);
+      const newMsg = { messageId: row.message_id, roomId, sender: row.sender_id, text, timestamp: row.timestamp, read: true, recipientRead: true };
+      await dbUtils.saveMessage(newMsg);
+      setAiProcessing(false);
+      setMessages(prev => {
+        const withoutStatus = prev.filter(m => !m.isStatus);
+        return withoutStatus.find(m => m.messageId === row.message_id) ? withoutStatus : [...withoutStatus, newMsg];
+      });
+      await supabase.from('pending_messages').delete().eq('id', row.id);
+      // 탭이 백그라운드일 때 브라우저 알림 표시
+      if (document.hidden && Notification.permission === 'granted') {
+        new Notification('AI Friend 💬', {
+          body: text.replace(/[#*`_~]/g, '').slice(0, 120),
+          icon: '/freeChat/icon.png',
+          tag: 'ai-msg',
+        });
+      }
+    }
+  };
+
+  // Supabase Realtime 구독 (폴링 대체 — 즉시 알림)
   useEffect(() => {
     if (!isAiRoom) return;
+
+    // 폴링 함수 — Realtime이 동작하지 않는 경우 fallback
     const poll = async () => {
       const { data } = await supabase
         .from('pending_messages')
@@ -358,41 +402,32 @@ const ChatRoom = ({ session }) => {
         .eq('sender_id', AI_AGENT_ID)
         .order('timestamp', { ascending: true });
       if (!data?.length) return;
-
-      const toDelete = [];
-      for (const row of data) {
-        const payload = row.encrypted_payload || '';
-
-        if (payload.startsWith(STATUS_PREFIX)) {
-          // 상태 메시지: 애니메이션 버블로 업데이트 (IndexedDB 저장 안 함)
-          const statusText = payload.slice(STATUS_PREFIX.length);
-          const statusMsg = { messageId: row.message_id, roomId, sender: row.sender_id, text: statusText, timestamp: row.timestamp, read: true, isStatus: true };
-          setAiProcessing(true);
-          setMessages(prev => {
-            const exists = prev.find(m => m.messageId === row.message_id);
-            if (exists) return prev.map(m => m.messageId === row.message_id ? statusMsg : m);
-            return [...prev, statusMsg];
-          });
-          toDelete.push(row.id); // 브리지가 다음 업데이트 시 재삽입
-        } else if (payload.startsWith(AI_PREFIX)) {
-          // 최종 응답: 상태 메시지 제거 후 표시
-          const text = payload.slice(AI_PREFIX.length);
-          const newMsg = { messageId: row.message_id, roomId, sender: row.sender_id, text, timestamp: row.timestamp, read: true, recipientRead: true };
-          await dbUtils.saveMessage(newMsg);
-          setAiProcessing(false);
-          setMessages(prev => {
-            const withoutStatus = prev.filter(m => !m.isStatus);
-            return withoutStatus.find(m => m.messageId === row.message_id) ? withoutStatus : [...withoutStatus, newMsg];
-          });
-          toDelete.push(row.id);
-        }
-      }
-      if (toDelete.length > 0) {
-        await supabase.from('pending_messages').delete().in('id', toDelete);
-      }
+      for (const row of data) await processAiRow(row);
     };
-    const id = setInterval(poll, 2000);
-    return () => clearInterval(id);
+
+    // 초기 로드 + 3초 폴링 (Realtime fallback)
+    poll();
+    const pollId = setInterval(poll, 3000);
+
+    // Realtime 구독 (즉시 알림 — 동작하면 폴링보다 빠름)
+    const channel = supabase
+      .channel(`ai-pending-${roomId}`)
+      .on('postgres_changes', {
+        event: 'INSERT',
+        schema: 'public',
+        table: 'pending_messages',
+        filter: `room_id=eq.${roomId}`,
+      }, ({ new: row }) => {
+        if (row.sender_id === AI_AGENT_ID) {
+          processAiRow(row).catch(e => console.error('[AI msg]', e));
+        }
+      })
+      .subscribe();
+
+    return () => {
+      clearInterval(pollId);
+      supabase.removeChannel(channel);
+    };
   }, [isAiRoom, roomId]);
 
   useEffect(() => {

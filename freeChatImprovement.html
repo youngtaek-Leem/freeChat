@@ -1,0 +1,428 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>freeChat 개선 계획</title>
+  <style>
+    * { box-sizing: border-box; margin: 0; padding: 0; }
+
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: #0f1117;
+      color: #e2e8f0;
+      min-height: 100vh;
+      padding: 48px 24px;
+    }
+
+    header {
+      text-align: center;
+      margin-bottom: 56px;
+    }
+    header h1 {
+      font-size: 2.4rem;
+      font-weight: 800;
+      background: linear-gradient(135deg, #6ee7f7, #a78bfa);
+      -webkit-background-clip: text;
+      -webkit-text-fill-color: transparent;
+      margin-bottom: 12px;
+    }
+    header p {
+      color: #94a3b8;
+      font-size: 1rem;
+      max-width: 560px;
+      margin: 0 auto;
+      line-height: 1.7;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+      gap: 24px;
+      max-width: 1200px;
+      margin: 0 auto 56px;
+    }
+
+    .card {
+      background: #1e2330;
+      border: 1px solid #2d3548;
+      border-radius: 16px;
+      padding: 28px;
+      transition: transform 0.2s, border-color 0.2s;
+    }
+    .card:hover {
+      transform: translateY(-4px);
+      border-color: #4f5f8a;
+    }
+
+    .card-header {
+      display: flex;
+      align-items: center;
+      gap: 14px;
+      margin-bottom: 20px;
+    }
+    .card-icon {
+      font-size: 1.8rem;
+      width: 52px;
+      height: 52px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 14px;
+      flex-shrink: 0;
+    }
+    .card-title {
+      font-size: 1.05rem;
+      font-weight: 700;
+      color: #f1f5f9;
+    }
+    .card-subtitle {
+      font-size: 0.78rem;
+      color: #64748b;
+      margin-top: 2px;
+    }
+
+    .feature-list {
+      list-style: none;
+    }
+    .feature-list li {
+      display: flex;
+      gap: 10px;
+      padding: 10px 0;
+      border-bottom: 1px solid #2a3347;
+      font-size: 0.88rem;
+      color: #cbd5e1;
+      line-height: 1.5;
+    }
+    .feature-list li:last-child { border-bottom: none; }
+    .feature-list .num {
+      font-weight: 700;
+      color: #7c8db0;
+      min-width: 22px;
+      font-size: 0.75rem;
+      padding-top: 1px;
+    }
+    .feature-list .desc strong {
+      display: block;
+      color: #e2e8f0;
+      font-weight: 600;
+      margin-bottom: 2px;
+    }
+
+    /* category colors */
+    .cat-remote .card-icon { background: #1e3a5f; color: #60a5fa; }
+    .cat-chat   .card-icon { background: #1e3d30; color: #34d399; }
+    .cat-ai     .card-icon { background: #3b2a5f; color: #a78bfa; }
+    .cat-sec    .card-icon { background: #4a1e1e; color: #f87171; }
+
+    .cat-remote { border-top: 3px solid #3b82f6; }
+    .cat-chat   { border-top: 3px solid #10b981; }
+    .cat-ai     { border-top: 3px solid #8b5cf6; }
+    .cat-sec    { border-top: 3px solid #ef4444; }
+
+    /* priority table */
+    .priority-section {
+      max-width: 1200px;
+      margin: 0 auto 56px;
+    }
+    .priority-section h2 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #1e2330;
+      border-radius: 14px;
+      overflow: hidden;
+      font-size: 0.88rem;
+    }
+    thead th {
+      background: #252d42;
+      padding: 14px 20px;
+      text-align: left;
+      color: #94a3b8;
+      font-weight: 600;
+      font-size: 0.78rem;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+    tbody tr { border-bottom: 1px solid #2a3347; }
+    tbody tr:last-child { border-bottom: none; }
+    tbody tr:hover { background: #232b40; }
+    tbody td { padding: 14px 20px; color: #cbd5e1; vertical-align: middle; }
+    tbody td:first-child {
+      font-weight: 800;
+      font-size: 1.1rem;
+      color: #6ee7f7;
+      width: 48px;
+    }
+    .badge {
+      display: inline-block;
+      padding: 3px 10px;
+      border-radius: 20px;
+      font-size: 0.72rem;
+      font-weight: 600;
+    }
+    .badge-high   { background: #4a1e1e; color: #f87171; }
+    .badge-medium { background: #3a2e1a; color: #fbbf24; }
+    .badge-low    { background: #1e3a2e; color: #34d399; }
+
+    /* implemented */
+    .implemented-section {
+      max-width: 1200px;
+      margin: 0 auto 56px;
+    }
+    .implemented-section h2 {
+      font-size: 1.4rem;
+      font-weight: 700;
+      color: #f1f5f9;
+      margin-bottom: 20px;
+      display: flex;
+      align-items: center;
+      gap: 10px;
+    }
+    .chip-grid {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 10px;
+    }
+    .chip {
+      background: #1e2330;
+      border: 1px solid #2d3548;
+      border-radius: 30px;
+      padding: 8px 16px;
+      font-size: 0.82rem;
+      color: #94a3b8;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+    }
+    .chip .dot { color: #10b981; font-size: 0.6rem; }
+
+    footer {
+      text-align: center;
+      color: #334155;
+      font-size: 0.78rem;
+      margin-top: 24px;
+    }
+  </style>
+</head>
+<body>
+
+<header>
+  <h1>freeChat 개선 계획</h1>
+  <p>친구와의 대화부터 원격 컴퓨터 완전 제어까지 — 모바일 하나로 모든 것을 처리하는 앱을 목표로 합니다.</p>
+</header>
+
+<!-- 현재 구현 완료 -->
+<section class="implemented-section">
+  <h2>✅ 현재 구현 완료</h2>
+  <div class="chip-grid">
+    <div class="chip"><span class="dot">●</span> run_claude 2단계 실행 (계획→확인→실행)</div>
+    <div class="chip"><span class="dot">●</span> 모바일 예/아니오 확인 팝업</div>
+    <div class="chip"><span class="dot">●</span> 실행 중 중간 결과 스트리밍</div>
+    <div class="chip"><span class="dot">●</span> 위험 명령어 자동 감지</div>
+    <div class="chip"><span class="dot">●</span> 기존 파일 덮어쓰기 경고</div>
+    <div class="chip"><span class="dot">●</span> STOP 버튼 즉시 중단</div>
+    <div class="chip"><span class="dot">●</span> 기본 작업폴더 기억</div>
+    <div class="chip"><span class="dot">●</span> 작업 이력 저장 및 조회</div>
+    <div class="chip"><span class="dot">●</span> 이전 작업 컨텍스트 이어하기</div>
+    <div class="chip"><span class="dot">●</span> 작업 완료 요약 자동 전송</div>
+    <div class="chip"><span class="dot">●</span> 파일 전송 / 스크린샷 전송</div>
+    <div class="chip"><span class="dot">●</span> 브라우저 자동화</div>
+    <div class="chip"><span class="dot">●</span> 마우스 / 키보드 제어</div>
+  </div>
+</section>
+
+<!-- 개선 카드 그리드 -->
+<div class="grid">
+
+  <!-- 원격 컴퓨터 활용 -->
+  <div class="card cat-remote">
+    <div class="card-header">
+      <div class="card-icon">🖥️</div>
+      <div>
+        <div class="card-title">원격 컴퓨터 활용</div>
+        <div class="card-subtitle">모바일에서 데스크탑을 완전 제어</div>
+      </div>
+    </div>
+    <ul class="feature-list">
+      <li>
+        <span class="num">1</span>
+        <span class="desc"><strong>실시간 화면 스트리밍</strong>현재 스크린샷(단발) → 연속 캡처로 라이브 뷰. 모바일에서 화면 상태 실시간 확인</span>
+      </li>
+      <li>
+        <span class="num">2</span>
+        <span class="desc"><strong>시스템 모니터링</strong>CPU · 메모리 · 디스크 · 네트워크 사용량. "지금 컴퓨터 상태 알려줘" → 수치 + 그래프 이미지 전송</span>
+      </li>
+      <li>
+        <span class="num">3</span>
+        <span class="desc"><strong>프로세스 관리</strong>실행 중인 앱 목록 조회 / 강제 종료 / 재시작. "Zoom 켜줘", "크롬 닫아줘"</span>
+      </li>
+      <li>
+        <span class="num">4</span>
+        <span class="desc"><strong>예약 실행</strong>"매일 밤 11시에 백업 스크립트 실행해줘". cron 기반 자동화</span>
+      </li>
+      <li>
+        <span class="num">5</span>
+        <span class="desc"><strong>클립보드 동기화</strong>모바일에서 복사 → 컴퓨터 클립보드 자동 붙여넣기. 반대 방향도 지원</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- 친구 채팅 강화 -->
+  <div class="card cat-chat">
+    <div class="card-header">
+      <div class="card-icon">💬</div>
+      <div>
+        <div class="card-title">친구 채팅 강화</div>
+        <div class="card-subtitle">대화 경험의 질적 향상</div>
+      </div>
+    </div>
+    <ul class="feature-list">
+      <li>
+        <span class="num">6</span>
+        <span class="desc"><strong>음성 메시지</strong>모바일 녹음 → STT 텍스트 변환 → AI 명령어로도 활용. 컴퓨터 TTS로 읽어주기</span>
+      </li>
+      <li>
+        <span class="num">7</span>
+        <span class="desc"><strong>푸시 알림</strong>현재 폴링 방식 → 네이티브 푸시로 즉시 알림. AI 작업 완료 · 친구 메시지 알림</span>
+      </li>
+      <li>
+        <span class="num">8</span>
+        <span class="desc"><strong>메시지 반응 / 답장</strong>이모지 반응. 특정 메시지에 답장 (스레드)</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- AI 기능 확장 -->
+  <div class="card cat-ai">
+    <div class="card-header">
+      <div class="card-icon">🤖</div>
+      <div>
+        <div class="card-title">AI 기능 확장</div>
+        <div class="card-subtitle">더 스마트한 자동화</div>
+      </div>
+    </div>
+    <ul class="feature-list">
+      <li>
+        <span class="num">9</span>
+        <span class="desc"><strong>정기 보고</strong>"매일 아침 9시에 날씨 · 일정 · 할일 요약 보내줘". 컴퓨터가 모바일로 자동 브리핑</span>
+      </li>
+      <li>
+        <span class="num">10</span>
+        <span class="desc"><strong>멀티스텝 워크플로우</strong>여러 작업을 순서대로 정의, 단계별 확인 후 실행. "코드 작성 → 테스트 → 커밋 → 푸시" 파이프라인</span>
+      </li>
+      <li>
+        <span class="num">11</span>
+        <span class="desc"><strong>컨텍스트 메모리</strong>"저번에 말한 그 API 키" 같은 장기 기억. 프로젝트별 노트 저장</span>
+      </li>
+    </ul>
+  </div>
+
+  <!-- 보안 -->
+  <div class="card cat-sec">
+    <div class="card-header">
+      <div class="card-icon">🔒</div>
+      <div>
+        <div class="card-title">보안</div>
+        <div class="card-subtitle">안전한 원격 제어를 위한 기반</div>
+      </div>
+    </div>
+    <ul class="feature-list">
+      <li>
+        <span class="num">12</span>
+        <span class="desc"><strong>위험 작업 2차 인증</strong>고위험 명령 · 심야 시간대 접근 시 PIN 입력 요구</span>
+      </li>
+      <li>
+        <span class="num">13</span>
+        <span class="desc"><strong>접근 로그</strong>누가 언제 어떤 명령을 실행했는지 기록. 모바일에서 원격 조회 가능</span>
+      </li>
+    </ul>
+  </div>
+
+</div>
+
+<!-- 우선순위 테이블 -->
+<section class="priority-section">
+  <h2>🎯 구현 우선순위</h2>
+  <table>
+    <thead>
+      <tr>
+        <th>#</th>
+        <th>기능</th>
+        <th>이유</th>
+        <th>난이도</th>
+      </tr>
+    </thead>
+    <tbody>
+      <tr>
+        <td>1</td>
+        <td>예약 실행</td>
+        <td>자동화의 핵심, 기존 구조 위에 바로 구현 가능</td>
+        <td><span class="badge badge-low">낮음</span></td>
+      </tr>
+      <tr>
+        <td>2</td>
+        <td>시스템 모니터링</td>
+        <td>원격 활용의 기본 — 상태 파악 없이는 제어 불가</td>
+        <td><span class="badge badge-low">낮음</span></td>
+      </tr>
+      <tr>
+        <td>3</td>
+        <td>음성 메시지</td>
+        <td>채팅 + AI 명령 동시 활용, 사용성 대폭 향상</td>
+        <td><span class="badge badge-medium">중간</span></td>
+      </tr>
+      <tr>
+        <td>4</td>
+        <td>클립보드 동기화</td>
+        <td>즉시 체감 효과 큼, 구현 단순</td>
+        <td><span class="badge badge-low">낮음</span></td>
+      </tr>
+      <tr>
+        <td>5</td>
+        <td>정기 보고</td>
+        <td>예약 실행 위에 바로 구현, 생활 밀착형</td>
+        <td><span class="badge badge-low">낮음</span></td>
+      </tr>
+      <tr>
+        <td>6</td>
+        <td>푸시 알림</td>
+        <td>현재 폴링의 지연 문제 해결</td>
+        <td><span class="badge badge-medium">중간</span></td>
+      </tr>
+      <tr>
+        <td>7</td>
+        <td>멀티스텝 워크플로우</td>
+        <td>복잡한 작업 자동화의 핵심</td>
+        <td><span class="badge badge-medium">중간</span></td>
+      </tr>
+      <tr>
+        <td>8</td>
+        <td>실시간 화면 스트리밍</td>
+        <td>원격 제어의 완성, 데이터량 관리 필요</td>
+        <td><span class="badge badge-high">높음</span></td>
+      </tr>
+      <tr>
+        <td>9</td>
+        <td>2차 인증 / 접근 로그</td>
+        <td>보안 강화, 외부 공개 전 필수</td>
+        <td><span class="badge badge-medium">중간</span></td>
+      </tr>
+    </tbody>
+  </table>
+</section>
+
+<footer>
+  freeChat Improvement Plan · 2026
+</footer>
+
+</body>
+</html>

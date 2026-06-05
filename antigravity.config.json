@@ -2,8 +2,8 @@
     "models": {
         "local": {
             "provider": "openai-compatible",
-            "base_url": "http://127.0.0.1:8080",
-            "model": "mlx-community/gemma-4-e4b-it-4bit",
+            "base_url": "http://127.0.0.1:11434/v1",
+            "model": "gemma4:12b",
             "api_key": "Generic service API Key",
             "temperature": 0.1,
             "max_tokens": 8192,

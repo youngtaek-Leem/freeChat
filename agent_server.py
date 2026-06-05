@@ -13,6 +13,8 @@ import re
 import shutil
 import subprocess
 import tempfile
+import uuid
+from datetime import datetime, timezone
 from pathlib import Path
 
 import httpx
@@ -23,19 +25,21 @@ from fastapi.middleware.cors import CORSMiddleware
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    task = None
+    tasks = []
+    sched_task = asyncio.create_task(scheduler_loop())
+    tasks.append(sched_task)
     if os.environ.get("SUPABASE_SERVICE_KEY"):
         ssl_cert = os.environ.get("SSL_CERT")
         scheme = "wss" if ssl_cert and os.path.exists(ssl_cert) else "ws"
         os.environ.setdefault("AGENT_WS", f"{scheme}://localhost:3001/ws")
         from agent_bridge import poll_loop
-        task = asyncio.create_task(poll_loop())
+        tasks.append(asyncio.create_task(poll_loop()))
         print(f"[server] AI Friend Bridge 시작됨 ({os.environ['AGENT_WS']})")
     else:
         print("[server] SUPABASE_SERVICE_KEY 없음 — AI Friend Bridge 비활성")
     yield
-    if task:
-        task.cancel()
+    for t in tasks:
+        t.cancel()
 
 
 app = FastAPI(lifespan=lifespan)
@@ -54,10 +58,220 @@ IS_WIN = platform.system() == "Windows"
 CHAT_HISTORY_DIR = Path.home() / ".ai_chats"
 CHAT_HISTORY_DIR.mkdir(exist_ok=True)
 
+CLAUDE_TASK_DIR = Path.home() / ".ai_claude_tasks"
+CLAUDE_TASK_DIR.mkdir(exist_ok=True)
+
+AGENT_CONFIG_FILE = Path.home() / ".ai_agent_config.json"
+
+# 위험 명령어 패턴 (pattern, 설명)
+_DANGER_PATTERNS = [
+    (r"rm\s+-[rf]{1,2}\s+[/~*]",   "rm -rf 위험 경로"),
+    (r"rm\s+-[rf]{1,2}\s+\*",       "rm -rf 와일드카드"),
+    (r"sudo\s+rm",                   "sudo rm"),
+    (r"drop\s+table",                "DROP TABLE"),
+    (r"drop\s+database",             "DROP DATABASE"),
+    (r"truncate\s+table",            "TRUNCATE TABLE"),
+    (r"mkfs",                        "디스크 포맷(mkfs)"),
+    (r"\bdd\s+if=",                  "dd 디스크 복사"),
+    (r":\(\)\{.*\}.*:",             "Fork bomb"),
+    (r"chmod\s+-r\s+777",           "chmod -R 777"),
+    (r">/dev/[sh]d[a-z]",           "디스크 직접 쓰기"),
+]
+
+
+def _detect_danger(text: str) -> list[str]:
+    """계획 텍스트에서 위험 패턴을 검출해 설명 목록 반환."""
+    found = []
+    lower = text.lower()
+    for pattern, label in _DANGER_PATTERNS:
+        if re.search(pattern, lower):
+            found.append(label)
+    return found
+
+
+def _load_agent_config() -> dict:
+    if AGENT_CONFIG_FILE.exists():
+        try:
+            return json.loads(AGENT_CONFIG_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return {}
+
+
+def _save_agent_config(config: dict):
+    AGENT_CONFIG_FILE.write_text(
+        json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+SCHEDULED_TASKS_FILE = Path.home() / ".ai_scheduled_tasks.json"
+AI_AGENT_ID = "a04fce0a-02f8-4040-962a-22d7d98851f0"
+AI_PREFIX = "_ai_:"
+
+
+def _load_scheduled_tasks() -> list:
+    if SCHEDULED_TASKS_FILE.exists():
+        try:
+            return json.loads(SCHEDULED_TASKS_FILE.read_text(encoding="utf-8"))
+        except Exception:
+            pass
+    return []
+
+
+def _save_scheduled_tasks(tasks: list):
+    SCHEDULED_TASKS_FILE.write_text(
+        json.dumps(tasks, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+
+
+def _should_run(task: dict, now: datetime) -> bool:
+    """예약 시간이 됐는지 확인."""
+    schedule = task.get("schedule", "")
+    last_run = task.get("last_run")
+    last_dt = datetime.fromisoformat(last_run) if last_run else None
+
+    if schedule.startswith("daily "):          # "daily HH:MM"
+        h, m = map(int, schedule[6:].split(":"))
+        if now.hour == h and now.minute == m:
+            if not last_dt or last_dt.date() < now.date():
+                return True
+    elif schedule.startswith("every "):        # "every Nm" / "every Nh"
+        val = schedule[6:]
+        secs = int(val[:-1]) * (60 if val.endswith("m") else 3600)
+        if not last_dt or (now - last_dt).total_seconds() >= secs:
+            return True
+    elif schedule.startswith("once "):         # "once YYYY-MM-DD HH:MM"
+        target = datetime.strptime(schedule[5:], "%Y-%m-%d %H:%M")
+        if not last_dt and now >= target:
+            return True
+    return False
+
+
+async def _notify_mobile(text: str):
+    """config에 저장된 마지막 활성 사용자에게 Supabase 메시지 전송."""
+    cfg = _load_agent_config()
+    room_id = cfg.get("notification_room_id")
+    user_id = cfg.get("notification_user_id")
+    service_key = os.environ.get("SUPABASE_SERVICE_KEY", "")
+    supabase_url = os.environ.get("SUPABASE_URL", "https://cqhxbsyamdmdraiueaht.supabase.co")
+    if not (room_id and user_id and service_key):
+        print(f"[scheduler] 알림 대상 없음 — 메시지 전송 불가: {text[:60]}")
+        return
+    try:
+        async with httpx.AsyncClient(timeout=10) as c:
+            await c.post(
+                f"{supabase_url}/rest/v1/pending_messages",
+                json={
+                    "sender_id": AI_AGENT_ID,
+                    "receiver_id": user_id,
+                    "room_id": room_id,
+                    "encrypted_payload": f"{AI_PREFIX}{text}",
+                    "message_id": str(uuid.uuid4()),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                },
+                headers={
+                    "apikey": service_key,
+                    "Authorization": f"Bearer {service_key}",
+                    "Content-Type": "application/json",
+                    "Prefer": "return=minimal",
+                },
+            )
+        print(f"[scheduler] 알림 전송: {text[:60]}")
+    except Exception as e:
+        print(f"[scheduler] 알림 전송 실패: {e}")
+
+
+async def _execute_scheduled_task(task: dict):
+    """예약 작업 실행 후 결과를 모바일로 전송."""
+    name = task.get("name", "예약 작업")
+    cmd_type = task.get("type", "shell")
+    command = task.get("command", "")
+    workspace = task.get("workspace")
+    cwd = workspace or None
+
+    await _notify_mobile(f"⏰ 예약 작업 시작: {name}")
+    proc = None
+    try:
+        if cmd_type == "shell":
+            proc = await asyncio.create_subprocess_shell(
+                command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=300)
+            output = (stdout.decode(errors="replace") + stderr.decode(errors="replace")).strip()
+            output = output[:800] or "(출력 없음)"
+            await _notify_mobile(f"✅ {name} 완료\n\n{output}")
+        elif cmd_type == "claude":
+            claude_bin = shutil.which("claude") or "claude"
+            proc = await asyncio.create_subprocess_exec(
+                claude_bin, "--print", "--dangerously-skip-permissions", command,
+                stdin=asyncio.subprocess.DEVNULL,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                cwd=cwd,
+            )
+            stdout, _ = await asyncio.wait_for(proc.communicate(), timeout=300)
+            output = stdout.decode(errors="replace").strip()[:800] or "(출력 없음)"
+            await _notify_mobile(f"✅ {name} 완료\n\n{output}")
+    except asyncio.TimeoutError:
+        if proc is not None:
+            try:
+                proc.kill()
+            except Exception:
+                pass
+        await _notify_mobile(f"⚠️ {name} 타임아웃 (300초 초과) — 프로세스 강제 종료")
+    except Exception as e:
+        await _notify_mobile(f"❌ {name} 실패: {e}")
+
+
+async def scheduler_loop():
+    """30초마다 예약 작업을 확인하고 실행."""
+    print("[scheduler] 시작됨")
+    while True:
+        await asyncio.sleep(30)
+        try:
+            tasks = _load_scheduled_tasks()
+            now = datetime.now()
+            changed = False
+            for task in tasks:
+                try:
+                    if task.get("enabled", True) and _should_run(task, now):
+                        print(f"[scheduler] 실행: {task.get('name')}")
+                        asyncio.create_task(_execute_scheduled_task(task))
+                        task["last_run"] = now.isoformat()
+                        changed = True
+                        # once 타입은 실행 후 비활성화
+                        if task.get("schedule", "").startswith("once "):
+                            task["enabled"] = False
+                except Exception as te:
+                    print(f"[scheduler] 태스크 오류 ({task.get('name', '?')}): {te}")
+            if changed:
+                _save_scheduled_tasks(tasks)
+        except Exception as e:
+            print(f"[scheduler] 오류: {e}")
+
+
+def _save_claude_task(prompt: str, plan: str, result: str, workspace: "str | None", duration: float) -> str:
+    """run_claude 실행 결과를 파일로 저장. 파일명 반환."""
+    task = {
+        "timestamp": datetime.now().isoformat(),
+        "prompt": prompt,
+        "plan": plan,
+        "result": result[:1000],
+        "workspace": workspace,
+        "duration_sec": round(duration, 1),
+    }
+    fname = f"task_{datetime.now().strftime('%Y%m%d_%H%M%S')}.json"
+    (CLAUDE_TASK_DIR / fname).write_text(
+        json.dumps(task, ensure_ascii=False, indent=2), encoding="utf-8"
+    )
+    return fname
+
 
 def _save_history(conversation: list) -> str:
     """Save conversation (excluding system prompt) to a JSON file. Returns filename."""
-    from datetime import datetime
     messages = [m for m in conversation if m.get("role") != "system"]
     # Strip raw binary data (images in tool messages) to keep files small
     clean = []
@@ -519,6 +733,92 @@ TOOLS = [
             },
         },
     },
+    # ── System monitoring ──
+    {
+        "type": "function",
+        "function": {
+            "name": "system_monitor",
+            "description": "Get current system status: CPU, memory, disk, network usage. Use when user asks about computer state or performance.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    # ── Process management ──
+    {
+        "type": "function",
+        "function": {
+            "name": "list_processes",
+            "description": "List running processes sorted by CPU usage. Use when user asks what's running or wants to find a process to kill.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "keyword": {"type": "string", "description": "Filter processes by name keyword (optional)"},
+                    "top": {"type": "integer", "description": "Number of top processes to return (default 20)", "default": 20},
+                },
+                "required": [],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "kill_process",
+            "description": "Terminate a process by PID or name. This is a destructive action — always confirm with the user first.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "pid": {"type": "integer", "description": "Process ID to kill (preferred)"},
+                    "name": {"type": "string", "description": "Process name to kill (kills first match)"},
+                },
+                "required": [],
+            },
+        },
+    },
+    # ── Scheduled tasks ──
+    {
+        "type": "function",
+        "function": {
+            "name": "schedule_task",
+            "description": (
+                "Schedule a recurring or one-time task. "
+                "schedule format: 'daily HH:MM' | 'every Nm' | 'every Nh' | 'once YYYY-MM-DD HH:MM'. "
+                "type: 'shell' for bash commands, 'claude' for natural language tasks. "
+                "Examples: 'daily 09:00', 'every 30m', 'once 2026-06-10 14:00'."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "name":     {"type": "string", "description": "Task name (shown in notifications)"},
+                    "schedule": {"type": "string", "description": "Schedule string"},
+                    "type":     {"type": "string", "description": "'shell' or 'claude'", "default": "shell"},
+                    "command":  {"type": "string", "description": "Shell command or natural language instruction"},
+                    "workspace":{"type": "string", "description": "Working directory (optional)"},
+                },
+                "required": ["name", "schedule", "command"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "list_scheduled_tasks",
+            "description": "List all scheduled tasks.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "cancel_scheduled_task",
+            "description": "Cancel (disable) a scheduled task by ID.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "task_id": {"type": "string", "description": "Task ID from list_scheduled_tasks"},
+                },
+                "required": ["task_id"],
+            },
+        },
+    },
     # ── Chat history ──
     {
         "type": "function",
@@ -539,6 +839,43 @@ TOOLS = [
                     "filename": {"type": "string", "description": "Filename from list_chat_history (e.g. chat_20260604_143022.json)"},
                 },
                 "required": ["filename"],
+            },
+        },
+    },
+    # ── Claude task history ──
+    {
+        "type": "function",
+        "function": {
+            "name": "list_claude_tasks",
+            "description": "List recent run_claude task history. Use when user asks to continue previous work or see what was done before.",
+            "parameters": {"type": "object", "properties": {}, "required": []},
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "load_claude_task",
+            "description": "Load a specific run_claude task to get context (prompt, plan, result, workspace).",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "filename": {"type": "string", "description": "Task filename from list_claude_tasks"},
+                },
+                "required": ["filename"],
+            },
+        },
+    },
+    {
+        "type": "function",
+        "function": {
+            "name": "set_default_workspace",
+            "description": "Save a directory as the default workspace. Future run_claude calls will use this directory automatically.",
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "path": {"type": "string", "description": "Directory path to set as default workspace"},
+                },
+                "required": ["path"],
             },
         },
     },
@@ -871,8 +1208,17 @@ TOOL_MESSAGES: dict[str, tuple[str, str]] = {
     "execute_shell":    ("⚙️",  "명령 실행 중"),
     "control_app":      ("🖥️",  "앱 제어 중"),
     "run_python":       ("🐍", "Python 코드 실행 중"),
-    "list_chat_history":("📋", "대화 기록 목록 조회 중"),
-    "load_chat_history":("📂", "대화 기록 불러오는 중"),
+    "list_chat_history":  ("📋", "대화 기록 목록 조회 중"),
+    "load_chat_history":  ("📂", "대화 기록 불러오는 중"),
+    "list_claude_tasks":     ("📋", "Claude 작업 이력 조회 중"),
+    "load_claude_task":      ("📂", "Claude 작업 이력 불러오는 중"),
+    "set_default_workspace": ("📌", "기본 작업 디렉토리 저장 중"),
+    "system_monitor":        ("📊", "시스템 상태 확인 중"),
+    "list_processes":        ("🔍", "프로세스 목록 조회 중"),
+    "kill_process":          ("🛑", "프로세스 종료 중"),
+    "schedule_task":         ("⏰", "작업 예약 중"),
+    "list_scheduled_tasks":  ("📋", "예약 작업 목록 조회 중"),
+    "cancel_scheduled_task": ("🗑️",  "예약 작업 취소 중"),
     "send_file":        ("📤", "파일 전송 중"),
     "send_files_zipped":("🗜️",  "파일 압축 후 전송 중"),
     "capture_and_send": ("📤", "화면 캡처 후 전송 중"),
@@ -933,8 +1279,17 @@ RISK = {
     "find_app":  "low",
     "web_search": "low",
     "take_screenshot": "low",
-    "list_chat_history":"low",
-    "load_chat_history":"low",
+    "list_chat_history":     "low",
+    "load_chat_history":     "low",
+    "list_claude_tasks":     "low",
+    "load_claude_task":      "low",
+    "set_default_workspace": "low",
+    "system_monitor":        "low",
+    "list_processes":        "low",
+    "kill_process":          "high",
+    "schedule_task":         "medium",
+    "list_scheduled_tasks":  "low",
+    "cancel_scheduled_task": "medium",
     "send_file":        "medium",
     "send_files_zipped":"medium",
     "capture_and_send": "low",
@@ -1130,12 +1485,19 @@ async def run_claude_sdk(
         plan_text = f"(계획 수립 실패: {e})"
         print(f"[run_claude] 계획 수립 실패: {e}")
 
-    # ── 확인 요청 ─────────────────────────────────────────────────────────
-    # bridge 경유(모바일)인지 직접 WebSocket인지에 따라 처리가 다름
-    # bridge는 confirm_request를 처리할 수 없으므로 텍스트로 승인 여부를 물음
-    is_bridge = not hasattr(websocket, 'client_state')  # bridge WS vs FastAPI WS 구분
+    # ── 위험 명령어 감지 ──────────────────────────────────────────────────
+    danger_warnings = _detect_danger(plan_text)
 
-    print(f"[run_claude] confirm 요청 전송 (bridge={is_bridge})")
+    # ── 파일 존재 여부 확인 (덮어쓰기 경고) ──────────────────────────────
+    existing_files = []
+    for m in re.finditer(r'[`\'"]?((?:~|/[\w/]|\.\.?/)\S+\.\w+)[`\'"]?', plan_text):
+        fpath = Path(m.group(1).replace("~", str(Path.home())))
+        if fpath.exists() and fpath.is_file():
+            existing_files.append(str(m.group(1)))
+    existing_files = list(dict.fromkeys(existing_files))[:5]  # 중복 제거, 최대 5개
+
+    # ── 확인 요청 ─────────────────────────────────────────────────────────
+    print(f"[run_claude] confirm 요청 전송 | danger={danger_warnings} | existing={existing_files}")
     await _send({
         "type": "confirm_request",
         "id": tool_id,
@@ -1143,6 +1505,8 @@ async def run_claude_sdk(
         "args": {
             "task": prompt,
             "plan": plan_text,
+            "danger_warnings": danger_warnings,
+            "existing_files": existing_files,
         },
     })
 
@@ -1155,6 +1519,7 @@ async def run_claude_sdk(
         return "사용자가 취소했습니다."
 
     # ── 2단계: 실제 실행 ──────────────────────────────────────────────────
+    exec_start = asyncio.get_event_loop().time()
     await _send({"type": "progress", "icon": "🤖", "message": "Claude 작업 실행 중..."})
 
     try:
@@ -1168,25 +1533,29 @@ async def run_claude_sdk(
         async def _stream_output():
             """stdout을 읽으면서 진행 상황을 WebSocket으로 스트리밍."""
             accumulated = ""
-            while True:
-                line_task = asyncio.create_task(exec_proc.stdout.readline())
-                done, _ = await asyncio.wait(
-                    [line_task, asyncio.create_task(stop_event.wait())],
-                    return_when=asyncio.FIRST_COMPLETED,
-                )
-                if stop_event.is_set():
-                    line_task.cancel()
-                    exec_proc.kill()
-                    print("[run_claude] 실행 중 STOP 신호")
-                    break
-                line = line_task.result()
-                if not line:
-                    break
-                text = line.decode(errors="replace").rstrip()
-                if text:
-                    accumulated += text + "\n"
-                    await _send({"type": "progress", "icon": "🤖", "message": text[:120]})
-                    await _send({"type": "stream_text", "text": text})
+            stop_task = asyncio.create_task(stop_event.wait())
+            try:
+                while True:
+                    line_task = asyncio.create_task(exec_proc.stdout.readline())
+                    done, _ = await asyncio.wait(
+                        [line_task, stop_task],
+                        return_when=asyncio.FIRST_COMPLETED,
+                    )
+                    if stop_event.is_set():
+                        line_task.cancel()
+                        exec_proc.kill()
+                        print("[run_claude] 실행 중 STOP 신호")
+                        break
+                    line = line_task.result()
+                    if not line:
+                        break
+                    text = line.decode(errors="replace").rstrip()
+                    if text:
+                        accumulated += text + "\n"
+                        await _send({"type": "progress", "icon": "🤖", "message": text[:120]})
+                        await _send({"type": "stream_text", "text": text})
+            finally:
+                stop_task.cancel()
             return accumulated
 
         output = await asyncio.wait_for(_stream_output(), timeout=timeout)
@@ -1194,7 +1563,24 @@ async def run_claude_sdk(
         if stop_event.is_set():
             stop_event.clear()
             return "작업이 중단됐습니다."
-        return output.strip() or "작업 완료"
+
+        duration = asyncio.get_event_loop().time() - exec_start
+        result_text = output.strip() or "작업 완료"
+
+        # 이력 저장
+        task_file = _save_claude_task(prompt, plan_text, result_text, str(workspace) if workspace else None, duration)
+        print(f"[run_claude] 작업 이력 저장: {task_file} ({duration:.1f}s)")
+
+        # bridge가 요약 메시지를 만들 수 있도록 task_result 이벤트 전송
+        await _send({
+            "type": "task_result",
+            "prompt": prompt,
+            "duration_sec": round(duration, 1),
+            "task_file": task_file,
+            "success": True,
+        })
+
+        return result_text
 
     except asyncio.TimeoutError:
         try:
@@ -1427,6 +1813,154 @@ async def run_tool(name: str, args: dict, workspace: "Path | None" = None) -> st
                 except Exception:
                     lines.append(str(f))
             return "\n".join(lines)
+
+        elif name == "system_monitor":
+            import psutil
+            cpu = await asyncio.to_thread(psutil.cpu_percent, 1)
+            mem = psutil.virtual_memory()
+            disk = psutil.disk_usage("/")
+            net = psutil.net_io_counters()
+            boot = datetime.fromtimestamp(psutil.boot_time()).strftime("%Y-%m-%d %H:%M")
+            lines = [
+                f"🖥️  시스템 상태  ({datetime.now().strftime('%H:%M:%S')})",
+                "",
+                f"⚡ CPU      : {cpu:.1f}%  (코어 {psutil.cpu_count()}개)",
+                f"🧠 메모리   : {mem.percent:.1f}%  ({mem.used/1024**3:.1f} / {mem.total/1024**3:.1f} GB)",
+                f"💾 디스크   : {disk.percent:.1f}%  ({disk.used/1024**3:.1f} / {disk.total/1024**3:.1f} GB 사용)",
+                f"🌐 네트워크 : ↑ {net.bytes_sent/1024**2:.1f} MB  ↓ {net.bytes_recv/1024**2:.1f} MB",
+                f"🕐 부팅시간 : {boot}",
+            ]
+            battery = psutil.sensors_battery()
+            if battery is not None:
+                charging = "충전 중 🔌" if battery.power_plugged else "배터리 🔋"
+                secs = battery.secsleft
+                if secs > 0 and not battery.power_plugged:
+                    h, m = divmod(secs // 60, 60)
+                    remaining = f"  (잔여 {h}시간 {m}분)"
+                else:
+                    remaining = ""
+                lines.append(f"🔋 배터리   : {battery.percent:.0f}%  {charging}{remaining}")
+            return "\n".join(lines)
+
+        elif name == "list_processes":
+            import psutil
+            keyword = (args.get("keyword") or "").lower()
+            top = int(args.get("top", 20))
+            procs = []
+            for p in psutil.process_iter(["pid", "name", "cpu_percent", "memory_info", "status"]):
+                try:
+                    info = p.info
+                    if keyword and keyword not in info["name"].lower():
+                        continue
+                    mem_mb = info["memory_info"].rss / 1024**2 if info["memory_info"] else 0
+                    cpu_p = info["cpu_percent"] or 0.0
+                    procs.append((cpu_p, info["pid"], info["name"], mem_mb, info["status"]))
+                except Exception:
+                    pass
+            procs.sort(reverse=True)
+            lines = [f"{'PID':>7}  {'CPU%':>6}  {'MEM(MB)':>8}  {'STATUS':>10}  NAME"]
+            lines.append("-" * 55)
+            for cpu_p, pid, pname, mem_mb, status in procs[:top]:
+                lines.append(f"{pid:>7}  {cpu_p:>5.1f}%  {mem_mb:>7.1f}  {status:>10}  {pname}")
+            return "\n".join(lines)
+
+        elif name == "kill_process":
+            import psutil
+            pid = args.get("pid")
+            pname = args.get("name", "")
+            if pid:
+                try:
+                    p = psutil.Process(int(pid))
+                    proc_name = p.name()  # terminate() 전에 이름 조회
+                    p.terminate()
+                    return f"프로세스 종료 신호 전송: PID={pid} ({proc_name})"
+                except psutil.NoSuchProcess:
+                    return f"PID {pid} 프로세스를 찾을 수 없습니다."
+            elif pname:
+                killed = []
+                for p in psutil.process_iter(["pid", "name"]):
+                    try:
+                        if pname.lower() in p.info["name"].lower():
+                            p.terminate()
+                            killed.append(f"{p.info['name']} (PID={p.info['pid']})")
+                    except Exception:
+                        pass
+                return f"종료 신호 전송: {', '.join(killed)}" if killed else f"'{pname}' 프로세스를 찾을 수 없습니다."
+            return "pid 또는 name을 지정하세요."
+
+        elif name == "schedule_task":
+            tasks = _load_scheduled_tasks()
+            task = {
+                "id": str(uuid.uuid4())[:8],
+                "name": args["name"],
+                "schedule": args["schedule"],
+                "type": args.get("type", "shell"),
+                "command": args["command"],
+                "workspace": args.get("workspace"),
+                "enabled": True,
+                "last_run": None,
+                "created_at": datetime.now().isoformat(),
+            }
+            tasks.append(task)
+            _save_scheduled_tasks(tasks)
+            return f"예약 작업 등록 완료\nID: {task['id']}\n이름: {task['name']}\n일정: {task['schedule']}\n명령: {task['command'][:80]}"
+
+        elif name == "list_scheduled_tasks":
+            tasks = _load_scheduled_tasks()
+            if not tasks:
+                return "등록된 예약 작업이 없습니다."
+            lines = []
+            for t in tasks:
+                status = "✅" if t.get("enabled", True) else "⏸️"
+                last = (t.get("last_run") or "-")[:16].replace("T", " ")
+                lines.append(f"{status} [{t['id']}] {t['name']}\n   일정: {t['schedule']} | 마지막: {last}\n   명령: {t['command'][:60]}")
+            return "\n\n".join(lines)
+
+        elif name == "cancel_scheduled_task":
+            task_id = args["task_id"]
+            tasks = _load_scheduled_tasks()
+            for t in tasks:
+                if t["id"] == task_id:
+                    t["enabled"] = False
+                    _save_scheduled_tasks(tasks)
+                    return f"예약 작업 취소됨: {t['name']} ({task_id})"
+            return f"ID '{task_id}' 작업을 찾을 수 없습니다."
+
+        elif name == "list_claude_tasks":
+            files = sorted(CLAUDE_TASK_DIR.glob("task_*.json"), key=lambda f: f.stat().st_mtime, reverse=True)
+            if not files:
+                return "저장된 Claude 작업 이력이 없습니다."
+            lines = []
+            for f in files[:20]:
+                try:
+                    data = json.loads(f.read_text(encoding="utf-8"))
+                    ts = data.get("timestamp", "")[:19].replace("T", " ")
+                    ws = data.get("workspace") or "-"
+                    prompt_preview = data.get("prompt", "")[:50]
+                    dur = data.get("duration_sec", 0)
+                    lines.append(f"{f.name}  [{ts}]  {dur}s  ws={ws}  \"{prompt_preview}...\"")
+                except Exception:
+                    lines.append(str(f))
+            return "\n".join(lines)
+
+        elif name == "load_claude_task":
+            fname = args["filename"].strip()
+            if not fname.endswith(".json"):
+                fname += ".json"
+            path = CLAUDE_TASK_DIR / fname
+            if not path.exists():
+                return f"파일을 찾을 수 없습니다: {fname}"
+            data = json.loads(path.read_text(encoding="utf-8"))
+            return json.dumps(data, ensure_ascii=False, indent=2)
+
+        elif name == "set_default_workspace":
+            p = expand(args["path"])
+            if not p.is_dir():
+                return f"존재하지 않는 폴더: {p}"
+            config = _load_agent_config()
+            config["default_workspace"] = str(p)
+            _save_agent_config(config)
+            return f"기본 작업 디렉토리 저장됨: {p}"
 
         elif name == "load_chat_history":
             filename = args["filename"].strip()
@@ -2005,8 +2539,11 @@ async def ws_endpoint(websocket: WebSocket):
         except Exception:
             pass
 
-    workspace: Path | None = None
-    guide: str | None = None
+    # config에 저장된 default_workspace 불러오기
+    _cfg = _load_agent_config()
+    _dws = _cfg.get("default_workspace")
+    workspace: Path | None = Path(_dws) if _dws and Path(_dws).is_dir() else None
+    guide: str | None = read_guide(workspace) if workspace else None
     conversation = [{"role": "system", "content": build_system_prompt(workspace, guide)}]
 
     try:

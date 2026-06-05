@@ -10,6 +10,7 @@ import os
 import ssl
 import uuid
 from datetime import datetime, timezone
+from pathlib import Path
 
 import httpx
 import websockets
@@ -235,14 +236,36 @@ async def _ask_confirm(ws, msg: dict, room_id: str, user_id: str) -> None:
     plan = args.get("plan", "")
     task = args.get("task", args.get("command", str(args)))
 
+    danger_warnings = args.get("danger_warnings", [])
+    existing_files = args.get("existing_files", [])
+
     # 모바일 사용자에게 확인 메시지 전송
     lines = ["⚠️ Claude가 다음 작업을 실행하려 합니다:", ""]
     if plan:
         lines += [f"📋 {plan}", ""]
     else:
         lines += [f"🔧 {task}", ""]
+    if danger_warnings:
+        lines.append("🚨 위험 명령어 감지:")
+        for w in danger_warnings:
+            lines.append(f"  • {w}")
+        lines.append("")
+    if existing_files:
+        lines.append("📝 덮어쓸 수 있는 기존 파일:")
+        for f in existing_files:
+            lines.append(f"  • {f}")
+        lines.append("")
     lines.append("실행할까요? 예 / 아니오")
     confirm_text = "\n".join(lines)
+
+    # 질문 전송 전 DB에 이미 있는 row ID를 스냅샷으로 저장
+    # (타임스탬프 비교는 기기 클럭 차이로 오작동할 수 있어 ID 기반으로 필터링)
+    existing_rows = await supabase_get("pending_messages", {
+        "receiver_id": f"eq.{AI_AGENT_ID}",
+        "room_id": f"eq.{room_id}",
+        "select": "id",
+    })
+    seen_ids = {r["id"] for r in existing_rows}
 
     await supabase_post("pending_messages", {
         "sender_id": AI_AGENT_ID,
@@ -255,7 +278,6 @@ async def _ask_confirm(ws, msg: dict, room_id: str, user_id: str) -> None:
     print(f"[bridge] confirm 질문 전송 (tool_id={tool_id})")
 
     # 사용자 응답 대기 (최대 120초, 2초 간격 폴링)
-    approved = False
     deadline = asyncio.get_event_loop().time() + 120
     while asyncio.get_event_loop().time() < deadline:
         rows = await supabase_get("pending_messages", {
@@ -266,16 +288,20 @@ async def _ask_confirm(ws, msg: dict, room_id: str, user_id: str) -> None:
         })
         for row in rows:
             payload = row.get("encrypted_payload", "")
-            if payload == "_ai_stop_:":
+            # 질문 전송 이전에 이미 DB에 있던 row는 무시 (ID 기반 — 클럭 차이 무관)
+            if row["id"] in seen_ids and payload != "_ai_stop_:":
                 continue
+            # STOP 신호 → 거절로 처리
+            if payload == "_ai_stop_:":
+                await supabase_delete_ids("pending_messages", [row["id"]])
+                print(f"[bridge] confirm 중 STOP → 거절")
+                await ws.send(json.dumps({"type": "confirm", "tool_call_id": tool_id, "approved": False}))
+                return
             if not payload.startswith(AI_PREFIX):
                 continue
             answer = payload[len(AI_PREFIX):].strip().lower()
             await supabase_delete_ids("pending_messages", [row["id"]])
-            if answer in ("예", "네", "yes", "y", "승인", "확인", "ok"):
-                approved = True
-            else:
-                approved = False
+            approved = answer in ("예", "네", "yes", "y", "승인", "확인", "ok")
             print(f"[bridge] confirm 응답: '{answer}' → approved={approved}")
             await ws.send(json.dumps({"type": "confirm", "tool_call_id": tool_id, "approved": approved}))
             return
@@ -320,7 +346,7 @@ async def ask_agent(room_id: str, user_id: str, text: str, images: list | None =
         await ws.send(json.dumps(payload))
         accumulated = ""
         stream_buf: list[str] = []
-        stream_flush_at: float = 0.0
+        stream_flush_at: float = asyncio.get_event_loop().time() + 3
 
         async def _flush_stream():
             """버퍼에 쌓인 Claude 출력을 모바일 채팅 메시지로 전송."""
@@ -408,6 +434,24 @@ async def ask_agent(room_id: str, user_id: str, text: str, images: list | None =
                                 "message_id": str(uuid.uuid4()),
                                 "timestamp": datetime.now(timezone.utc).isoformat(),
                             })
+            elif t == "task_result":
+                # run_claude 완료 요약을 모바일 채팅 메시지로 전송
+                await _flush_stream()
+                prompt_preview = (msg.get("prompt") or "")[:60]
+                duration = msg.get("duration_sec", 0)
+                lines = [
+                    "✅ Claude 작업 완료",
+                    f"📝 {prompt_preview}{'...' if len(msg.get('prompt',''))>60 else ''}",
+                    f"⏱️ 소요: {duration}초",
+                ]
+                await supabase_post("pending_messages", {
+                    "sender_id": AI_AGENT_ID,
+                    "receiver_id": user_id,
+                    "room_id": room_id,
+                    "encrypted_payload": f"{AI_PREFIX}{chr(10).join(lines)}",
+                    "message_id": str(uuid.uuid4()),
+                    "timestamp": datetime.now(timezone.utc).isoformat(),
+                })
             elif t == "thinking":
                 await send_status(room_id, user_id, "🤔 " + (msg.get("message") or "요청 분석 중..."))
             elif t == "tool_start":
@@ -489,6 +533,16 @@ async def poll_loop():
                         prompt = f"파일 '{file_name}'을 분석해주세요."
                     else:
                         prompt = f"파일 '{file_name}'이 전송되었습니다. (이미지가 아닌 파일은 직접 분석할 수 없습니다.)"
+
+                # 스케줄러가 알림을 보낼 수 있도록 마지막 활성 사용자 저장
+                try:
+                    cfg_path = Path.home() / ".ai_agent_config.json"
+                    cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
+                    cfg["notification_room_id"] = room_id
+                    cfg["notification_user_id"] = user_id
+                    cfg_path.write_text(json.dumps(cfg, ensure_ascii=False, indent=2), encoding="utf-8")
+                except Exception:
+                    pass
 
                 # ask_agent 호출 전에 원래 메시지 삭제
                 # (_ask_confirm 폴링이 원래 메시지를 confirm 응답으로 오인하는 것을 방지)

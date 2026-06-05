@@ -3,8 +3,8 @@
 이 문서는 이 프로젝트에서 로컬 인공지능 모델을 활용하는 방법과 규칙을 정의합니다.
 
 ## 🔗 로컬 서버 설정
-- **Base URL**: `http://127.0.0.1:8080`
-- **사용 중인 모델**: `mlx-community/gemma-4-e4b-it-4bit` (Gemma 4)
+- **Base URL**: `http://127.0.0.1:11434/v1`
+- **사용 중인 모델**: `gemma4:12b` (Ollama Gemma 4 12B)
 - **제공 방식**: OpenAI 호환 API (`/v1/chat/completions`)
 
 ## 🤖 `@local` 워크플로우
