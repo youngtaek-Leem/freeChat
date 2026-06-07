@@ -10,6 +10,12 @@ import remarkGfm from 'remark-gfm';
 const IMG_PREFIX = '_img_:';
 const FILE_PREFIX = '_file_:';
 
+// **bold**한국어 패턴: 닫힘 ** 바로 뒤 한국어는 zero-width space 삽입해 파싱 보정
+const fixMarkdown = (text) => {
+  if (!text) return text;
+  return text.replace(/(\*{1,2}[^*]+\*{1,2})([가-힣])/g, '$1​$2');
+};
+
 const isMobile = /iPhone|iPad|iPod|Android/i.test(navigator.userAgent);
 
 const extractStoragePath = (text) => {
@@ -938,6 +944,7 @@ const ChatRoom = ({ session }) => {
                   })() : (!isMe && isAiRoom) ? (
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
+                      children={fixMarkdown(msg.text)}
                       components={{
                         p: ({ children }) => <p style={{ margin: '0 0 0.5em 0' }}>{children}</p>,
                         ul: ({ children }) => <ul style={{ margin: '0.3em 0', paddingLeft: '1.3em' }}>{children}</ul>,
@@ -957,7 +964,6 @@ const ChatRoom = ({ session }) => {
                         td: ({ children }) => <td style={{ border: '1px solid rgba(255,255,255,0.15)', padding: '4px 8px' }}>{children}</td>,
                       }}
                     >
-                      {msg.text}
                     </ReactMarkdown>
                   ) : (
                     msg.text

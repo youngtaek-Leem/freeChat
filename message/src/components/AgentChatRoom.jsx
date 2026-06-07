@@ -3,6 +3,12 @@ import { Link } from 'react-router-dom';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 
+// **bold**한국어 패턴: 닫힘 ** 바로 뒤 한국어는 zero-width space 삽입해 파싱 보정
+const fixMarkdown = (text) => {
+  if (!text) return text;
+  return text.replace(/(\*{1,2}[^*]+\*{1,2})([가-힣])/g, '$1​$2');
+};
+
 const AGENT_URL = 'wss://localhost:3001/ws';
 const STATUS_URL = 'https://localhost:3001/status';
 const BROWSE_URL = 'https://localhost:3001/browse';
@@ -861,7 +867,7 @@ export default function AgentChatRoom() {
                   strong: ({ children }) => <strong style={{ fontWeight: '700' }}>{children}</strong>,
                 }}
               >
-                {deLatex(msg.text)}
+                {fixMarkdown(deLatex(msg.text))}
               </ReactMarkdown>
               </div>
             </CopyWrapper>
