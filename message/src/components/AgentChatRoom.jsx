@@ -568,10 +568,26 @@ export default function AgentChatRoom() {
         });
       } else if (data.type === 'thinking_done') {
         setMessages(prev => prev.filter(m => m.type !== 'thinking'));
-      } else if (data.type === 'text') {
+      } else if (data.type === 'text_delta') {
+        // 스트리밍 토큰 — 마지막 assistant 버블에 누적
         setMessages(prev => {
           const withoutThinking = prev.filter(m => m.type !== 'thinking');
           const last = withoutThinking[withoutThinking.length - 1];
+          if (last?.type === 'assistant') {
+            return [...withoutThinking.slice(0, -1), { ...last, text: last.text + data.text }];
+          }
+          return [...withoutThinking, { id: crypto.randomUUID(), type: 'assistant', text: data.text }];
+        });
+      } else if (data.type === 'text') {
+        // 비스트리밍 또는 스트리밍 완료 후 전체 텍스트 (text_delta가 있었으면 중복이므로 무시)
+        setMessages(prev => {
+          const withoutThinking = prev.filter(m => m.type !== 'thinking');
+          const last = withoutThinking[withoutThinking.length - 1];
+          // 이미 스트리밍으로 내용이 쌓인 경우 덮어쓰기, 아니면 새 버블
+          if (last?.type === 'assistant' && last.text === data.text) return withoutThinking;
+          if (last?.type === 'assistant' && data.text.startsWith(last.text)) {
+            return [...withoutThinking.slice(0, -1), { ...last, text: data.text }];
+          }
           if (last?.type === 'assistant') {
             return [...withoutThinking.slice(0, -1), { ...last, text: last.text + data.text }];
           }

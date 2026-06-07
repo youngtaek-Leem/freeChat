@@ -190,6 +190,7 @@ const ChatRoom = ({ session }) => {
   const [aiProcessing, setAiProcessing] = useState(false);
   const [uploadProgress, setUploadProgress] = useState(null); // null | { done, total }
   const [showAttachMenu, setShowAttachMenu] = useState(false);
+  const [pendingFiles, setPendingFiles] = useState([]); // [{file, type:'image'|'file', previewUrl}]
   const messagesEndRef = useRef(null);
   const channelRef = useRef(null);
   const imageInputRef = useRef(null);
@@ -627,24 +628,36 @@ const ChatRoom = ({ session }) => {
 
   const sendMessage = async (e) => {
     e.preventDefault();
-    if (!input.trim()) return;
+    if (!input.trim() && pendingFiles.length === 0) return;
     if (!isAiRoom && (!encKey || !sigKey)) return;
     const ta = e.target.closest?.('form')?.querySelector('textarea');
     if (ta) ta.style.height = 'auto';
 
     if (isAiRoom) {
       try {
-        const messageId = window.crypto.randomUUID();
-        const timestamp = new Date().toISOString();
-        const myMessage = { messageId, roomId, sender: myId, text: input, timestamp, read: true, recipientRead: false };
-        await dbUtils.saveMessage(myMessage);
-        setMessages(prev => [...prev, myMessage]);
+        // 텍스트 메시지 전송
+        if (input.trim()) {
+          const messageId = window.crypto.randomUUID();
+          const timestamp = new Date().toISOString();
+          const myMessage = { messageId, roomId, sender: myId, text: input, timestamp, read: true, recipientRead: false };
+          await dbUtils.saveMessage(myMessage);
+          setMessages(prev => [...prev, myMessage]);
+          await supabase.from('pending_messages').insert({
+            sender_id: myId, receiver_id: friendId,
+            room_id: roomId, encrypted_payload: `${AI_PREFIX}${input}`,
+            message_id: messageId, timestamp,
+          });
+        }
         setInput('');
-        await supabase.from('pending_messages').insert({
-          sender_id: myId, receiver_id: friendId,
-          room_id: roomId, encrypted_payload: `${AI_PREFIX}${input}`,
-          message_id: messageId, timestamp,
-        });
+        // pendingFiles 전송
+        if (pendingFiles.length > 0) {
+          const images = pendingFiles.filter(f => f.type === 'image').map(f => f.file);
+          const files  = pendingFiles.filter(f => f.type === 'file').map(f => f.file);
+          if (images.length) await sendImages(images);
+          if (files.length)  await sendFiles(files);
+          pendingFiles.forEach(f => { if (f.previewUrl) URL.revokeObjectURL(f.previewUrl); });
+          setPendingFiles([]);
+        }
         setAiProcessing(true);
       } catch (err) {
         console.error('AI send error:', err);
@@ -690,6 +703,16 @@ const ChatRoom = ({ session }) => {
         timestamp,
       });
       if (insErr) console.error('Pending insert failed:', insErr);
+
+      // pendingFiles 전송 (일반 채팅)
+      if (pendingFiles.length > 0) {
+        const images = pendingFiles.filter(f => f.type === 'image').map(f => f.file);
+        const files  = pendingFiles.filter(f => f.type === 'file').map(f => f.file);
+        if (images.length) await sendImages(images);
+        if (files.length)  await sendFiles(files);
+        pendingFiles.forEach(f => { if (f.previewUrl) URL.revokeObjectURL(f.previewUrl); });
+        setPendingFiles([]);
+      }
     } catch (e) {
       console.error('Send error:', e);
       alert('Error sending message');
@@ -976,11 +999,58 @@ const ChatRoom = ({ session }) => {
         backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
         borderTop: '2px solid var(--primary-color)',
       }}>
+        {/* 첨부 파일 미리보기 */}
+        {pendingFiles.length > 0 && (
+          <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.5rem' }}>
+            {pendingFiles.map((pf, idx) => (
+              <div key={idx} style={{ position: 'relative', display: 'inline-flex', alignItems: 'center' }}>
+                {pf.type === 'image' ? (
+                  <img src={pf.previewUrl} alt={pf.file.name}
+                    style={{ width: 64, height: 64, objectFit: 'cover', borderRadius: 8, border: '1px solid var(--border-color)' }} />
+                ) : (
+                  <div style={{
+                    padding: '0.3rem 0.6rem', borderRadius: 8, fontSize: '0.78rem',
+                    background: 'var(--surface-color)', border: '1px solid var(--border-color)',
+                    maxWidth: 120, overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap',
+                  }}>📄 {pf.file.name}</div>
+                )}
+                <button type="button" onClick={() => {
+                  if (pf.previewUrl) URL.revokeObjectURL(pf.previewUrl);
+                  setPendingFiles(prev => prev.filter((_, i) => i !== idx));
+                }} style={{
+                  position: 'absolute', top: -6, right: -6,
+                  width: 18, height: 18, borderRadius: '50%', border: 'none',
+                  background: '#ef4444', color: '#fff', fontSize: '0.7rem',
+                  cursor: 'pointer', display: 'flex', alignItems: 'center', justifyContent: 'center',
+                }}>✕</button>
+              </div>
+            ))}
+          </div>
+        )}
+
         <form onSubmit={sendMessage} style={{ display: 'flex', gap: '0.5rem', alignItems: 'flex-end', position: 'relative' }}>
           <input ref={imageInputRef} type="file" accept="image/*" multiple style={{ display: 'none' }}
-            onChange={(e) => { if (e.target.files?.length) { sendImages(e.target.files); setShowAttachMenu(false); } }} />
+            onChange={(e) => {
+              if (e.target.files?.length) {
+                const newFiles = Array.from(e.target.files).map(f => ({
+                  file: f, type: 'image', previewUrl: URL.createObjectURL(f),
+                }));
+                setPendingFiles(prev => [...prev, ...newFiles]);
+                setShowAttachMenu(false);
+                e.target.value = '';
+              }
+            }} />
           <input ref={fileInputRef} type="file" multiple style={{ display: 'none' }}
-            onChange={(e) => { if (e.target.files?.length) { sendFiles(e.target.files); setShowAttachMenu(false); } }} />
+            onChange={(e) => {
+              if (e.target.files?.length) {
+                const newFiles = Array.from(e.target.files).map(f => ({
+                  file: f, type: 'file', previewUrl: null,
+                }));
+                setPendingFiles(prev => [...prev, ...newFiles]);
+                setShowAttachMenu(false);
+                e.target.value = '';
+              }
+            }} />
 
           {/* 첨부 메뉴 팝업 */}
           {showAttachMenu && (

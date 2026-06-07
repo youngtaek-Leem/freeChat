@@ -52,6 +52,11 @@ app.add_middleware(
 
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
+OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
+
+def _is_local_model() -> bool:
+    """Gemini가 아닌 로컬(Ollama) 모델 여부."""
+    return not GEMINI_MODEL.startswith("gemini")
 IS_MAC = platform.system() == "Darwin"
 IS_WIN = platform.system() == "Windows"
 
@@ -491,6 +496,160 @@ async def _call_gemini(conversation: list, websocket) -> tuple[str, list, object
                     await asyncio.sleep(wait_sec)
                     continue
             raise
+
+
+def _conversation_to_openai_messages(conversation: list) -> list:
+    """대화 기록을 OpenAI messages 포맷으로 변환."""
+    messages = []
+    i = 0
+    while i < len(conversation):
+        msg = conversation[i]
+        role = msg.get("role")
+        content = msg.get("content", "")
+        if role == "system":
+            messages.append({"role": "system", "content": content})
+            i += 1
+        elif role == "user":
+            images = msg.get("images", [])
+            if images:
+                parts = []
+                if content:
+                    parts.append({"type": "text", "text": content})
+                for img in images:
+                    if isinstance(img, dict):
+                        raw = img["data"]
+                        mime = img.get("mime_type", "image/jpeg")
+                        if isinstance(raw, bytes):
+                            raw = base64.b64encode(raw).decode()
+                    else:
+                        raw = img if isinstance(img, str) else base64.b64encode(img).decode()
+                        mime = "image/jpeg"
+                    parts.append({
+                        "type": "image_url",
+                        "image_url": {"url": f"data:{mime};base64,{raw}"},
+                    })
+                messages.append({"role": "user", "content": parts})
+            else:
+                messages.append({"role": "user", "content": content or ""})
+            i += 1
+        elif role == "assistant":
+            a_msg: dict = {"role": "assistant", "content": content or ""}
+            tcs = msg.get("tool_calls", [])
+            if tcs:
+                a_msg["tool_calls"] = [
+                    {
+                        "id": tc.get("id", tc["function"]["name"]),
+                        "type": "function",
+                        "function": {
+                            "name": tc["function"]["name"],
+                            "arguments": json.dumps(
+                                tc["function"].get("arguments", {}), ensure_ascii=False
+                            ),
+                        },
+                    }
+                    for tc in tcs
+                ]
+            messages.append(a_msg)
+            i += 1
+        elif role == "tool":
+            while i < len(conversation) and conversation[i].get("role") == "tool":
+                t = conversation[i]
+                messages.append({
+                    "role": "tool",
+                    "tool_call_id": t.get("tool_call_id") or t.get("name", "unknown"),
+                    "content": t.get("content", ""),
+                })
+                i += 1
+        else:
+            i += 1
+    return messages
+
+
+async def _call_openai_compat(conversation: list, websocket) -> tuple[str, list, None]:
+    """OpenAI 호환 API (Ollama) 스트리밍 호출. Returns (full_text, tool_calls, None)."""
+    from openai import AsyncOpenAI
+
+    client = AsyncOpenAI(base_url=OLLAMA_BASE_URL, api_key="ollama")
+
+    messages = _conversation_to_openai_messages(conversation)
+
+    tools_openai = [
+        {
+            "type": "function",
+            "function": {
+                "name": t["function"]["name"],
+                "description": t["function"].get("description", ""),
+                "parameters": t["function"].get("parameters", {}),
+            },
+        }
+        for t in TOOLS
+    ]
+
+    full_text = ""
+    tool_calls_raw: dict[int, dict] = {}  # index → {id, name, arguments_buf}
+    thinking_done_sent = False
+
+    stream = await client.chat.completions.create(
+        model=GEMINI_MODEL,
+        messages=messages,
+        tools=tools_openai,
+        tool_choice="auto",
+        stream=True,
+    )
+    async for chunk in stream:
+            delta = chunk.choices[0].delta if chunk.choices else None
+            if delta is None:
+                continue
+
+            # 텍스트 델타 — 즉시 WebSocket으로 전송
+            if delta.content:
+                if not thinking_done_sent:
+                    try:
+                        await websocket.send_json({"type": "thinking_done"})
+                    except Exception:
+                        pass
+                    thinking_done_sent = True
+                full_text += delta.content
+                try:
+                    await websocket.send_json({"type": "text_delta", "text": delta.content})
+                except Exception:
+                    pass
+
+            # tool_calls 델타 누적
+            if delta.tool_calls:
+                for tc_delta in delta.tool_calls:
+                    idx = tc_delta.index
+                    if idx not in tool_calls_raw:
+                        tool_calls_raw[idx] = {"id": "", "name": "", "arguments_buf": ""}
+                    if tc_delta.id:
+                        tool_calls_raw[idx]["id"] = tc_delta.id
+                    if tc_delta.function:
+                        if tc_delta.function.name:
+                            tool_calls_raw[idx]["name"] += tc_delta.function.name
+                        if tc_delta.function.arguments:
+                            tool_calls_raw[idx]["arguments_buf"] += tc_delta.function.arguments
+
+    # 스트리밍 완료 후 전체 텍스트 전송 (text_delta 미지원 클라이언트 대비)
+    if full_text and thinking_done_sent:
+        try:
+            await websocket.send_json({"type": "text", "text": full_text})
+        except Exception:
+            pass
+
+    # tool_calls 조립
+    tool_calls = []
+    for idx in sorted(tool_calls_raw):
+        raw = tool_calls_raw[idx]
+        try:
+            args = json.loads(raw["arguments_buf"] or "{}")
+        except Exception:
+            args = {}
+        tool_calls.append({
+            "id": raw["id"] or raw["name"],
+            "function": {"name": raw["name"], "arguments": args},
+        })
+
+    return full_text, tool_calls, None
 
 
 # ── Tool definitions ───────────────────────────────────────────────────────
@@ -2490,26 +2649,26 @@ async def mkdir(payload: dict):
 
 # ── WebSocket endpoint ─────────────────────────────────────────────────────
 
-def _make_tool_result_msg(result: str, tool_name: str = "unknown") -> dict:
+def _make_tool_result_msg(result: str, tool_name: str = "unknown", tool_call_id: str = "") -> dict:
     """Convert tool result string to conversation message, handling screenshots."""
+    base = {"role": "tool", "name": tool_name, "tool_call_id": tool_call_id or tool_name}
     try:
         parsed = json.loads(result)
         if isinstance(parsed, dict):
             t = parsed.get("__type")
             if t == "screenshot":
-                return {"role": "tool", "name": tool_name, "content": parsed.get("note", "Screenshot"), "images": [parsed["data"]]}
+                return {**base, "content": parsed.get("note", "Screenshot"), "images": [parsed["data"]]}
             if t in ("file_output", "image_output"):
                 note = parsed.get("note") or parsed.get("filename") or t
-                return {"role": "tool", "name": tool_name, "content": f"Sent successfully: {note}"}
+                return {**base, "content": f"Sent successfully: {note}"}
             if t == "load_history":
-                # Inject history messages so AI has full context
                 msgs = parsed.get("messages", [])
                 saved_at = parsed.get("saved_at", "")[:19].replace("T", " ")
                 summary = f"대화 기록 '{parsed.get('filename')}' 불러옴 ({saved_at}, {len(msgs)}개 메시지)"
-                return {"role": "tool", "name": tool_name, "content": summary, "__inject": msgs}
+                return {**base, "content": summary, "__inject": msgs}
     except (json.JSONDecodeError, KeyError):
         pass
-    return {"role": "tool", "name": tool_name, "content": result}
+    return {**base, "content": result}
 
 
 @app.websocket("/ws")
@@ -2614,9 +2773,13 @@ async def ws_endpoint(websocket: WebSocket):
                 await safe_send({"type": "thinking", "message": "요청 분석 중..."})
 
                 try:
-                    full_content, tool_calls, raw_model_content = await _call_gemini(conversation, websocket)
+                    if _is_local_model():
+                        full_content, tool_calls, raw_model_content = await _call_openai_compat(conversation, websocket)
+                    else:
+                        full_content, tool_calls, raw_model_content = await _call_gemini(conversation, websocket)
                 except Exception as e:
-                    await safe_send({"type": "error", "message": f"Gemini error: {e}"})
+                    label = "Ollama" if _is_local_model() else "Gemini"
+                    await safe_send({"type": "error", "message": f"{label} error: {e}"})
                     break
 
                 # thinking 버블 제거 (텍스트 없이 tool_calls만 온 경우)
@@ -2781,7 +2944,7 @@ async def ws_endpoint(websocket: WebSocket):
                     except (json.JSONDecodeError, KeyError):
                         await safe_send({"type": "tool_result", "id": tool_id, "name": tool_name, "result": result, "success": True})
 
-                    tool_results.append(_make_tool_result_msg(result, tool_name))
+                    tool_results.append(_make_tool_result_msg(result, tool_name, tool_id))
 
                 if tool_results is None:
                     break  # stop 신호로 인한 중단

@@ -33,7 +33,8 @@ if ! "$SCRIPT_DIR/.venv/bin/python3" -c "from playwright.sync_api import sync_pl
   "$SCRIPT_DIR/.venv/bin/python3" -m playwright install chromium
 fi
 
-GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.1-flash-lite}"
+GEMINI_MODEL="${GEMINI_MODEL:-gemma4:12b}" #gemini-3.1-flash-lite
+
 
 # SSL 인증서 자동 탐색 (mkcert로 생성된 localhost.pem)
 SSL_CERT="${SSL_CERT:-$SCRIPT_DIR/localhost.pem}"

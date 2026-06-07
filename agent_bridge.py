@@ -367,12 +367,22 @@ async def ask_agent(room_id: str, user_id: str, text: str, images: list | None =
 
         await send_status(room_id, user_id, "🤔 요청 분석 중...")
         stop_watcher_task = asyncio.create_task(stop_watcher(ws))
+        delta_buf = ""          # 스트리밍 토큰 누적
+        delta_status_at = 0.0   # 마지막 status 업데이트 시각
         while True:
             raw = await asyncio.wait_for(ws.recv(), timeout=180)
             msg = json.loads(raw)
             t = msg.get("type")
             if t == "text":
                 accumulated += msg.get("text", "")
+            elif t == "text_delta":
+                # Ollama 스트리밍 토큰 — status bubble을 실시간으로 갱신
+                delta_buf += msg.get("text", "")
+                now = asyncio.get_event_loop().time()
+                if now - delta_status_at >= 1.0:   # 1초마다 갱신
+                    delta_status_at = now
+                    preview = delta_buf[-80:] if len(delta_buf) > 80 else delta_buf
+                    await send_status(room_id, user_id, f"💭 {preview}")
             elif t == "stream_text":
                 stream_buf.append(msg.get("text", ""))
                 now = asyncio.get_event_loop().time()
