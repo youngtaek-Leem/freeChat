@@ -33,8 +33,7 @@ if ! "$SCRIPT_DIR/.venv/bin/python3" -c "from playwright.sync_api import sync_pl
   "$SCRIPT_DIR/.venv/bin/python3" -m playwright install chromium
 fi
 
-GEMINI_MODEL="${GEMINI_MODEL:-gemma4:12b}" #gemini-3.1-flash-lite
-
+GEMINI_MODEL="${GEMINI_MODEL:-gemini-3.1-flash-lite}" # #gemma4:12b #gemini-3.5-flash #gemini-3.1-flash-lite
 
 # SSL 인증서 자동 탐색 (mkcert로 생성된 localhost.pem)
 SSL_CERT="${SSL_CERT:-$SCRIPT_DIR/localhost.pem}"
@@ -57,12 +56,17 @@ echo ""
 export GEMINI_API_KEY
 export GEMINI_MODEL
 
-# ANTHROPIC_API_KEY (Claude 서브에이전트용, 선택)
+# Ollama 로컬 모델 설정 (gemini 계열이 아닐 때만 적용)
+if ! echo "$GEMINI_MODEL" | grep -q "^gemini"; then
+  OLLAMA_NUM_CTX="${OLLAMA_NUM_CTX:-8192}"
+  OLLAMA_NUM_PREDICT="${OLLAMA_NUM_PREDICT:-2048}"
+  export OLLAMA_NUM_CTX OLLAMA_NUM_PREDICT
+  echo "Ollama 모델: $GEMINI_MODEL  (ctx=${OLLAMA_NUM_CTX}, max_tokens=${OLLAMA_NUM_PREDICT})"
+fi
+
+# ANTHROPIC_API_KEY (현재 run_claude는 claude CLI를 직접 사용하므로 불필요)
 if [ -n "$ANTHROPIC_API_KEY" ]; then
   export ANTHROPIC_API_KEY
-  echo "Claude 서브에이전트: 활성 (model: ${CLAUDE_SUBAGENT_MODEL:-claude-opus-4-8-20251101})"
-else
-  echo "⚠️  ANTHROPIC_API_KEY 없음 — run_claude 툴이 제한됩니다."
 fi
 
 # 슬립 방지 (화면은 꺼져도 됨 — caffeinate -i: 시스템 idle sleep만 차단)

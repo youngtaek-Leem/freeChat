@@ -2,6 +2,8 @@ import React, { useState } from 'react';
 import { supabase } from '../supabaseClient';
 import { useNavigate } from 'react-router-dom';
 
+const AI_AGENT_ID = 'a04fce0a-02f8-4040-962a-22d7d98851f0';
+
 export default function Discovery({ session }) {
   const [searchTerm, setSearchTerm] = useState('');
   const [results, setResults] = useState([]);
@@ -25,7 +27,8 @@ export default function Discovery({ session }) {
       console.error(error);
       alert('Error searching: ' + error.message);
     } else {
-      setResults(data || []);
+      const canSeeAiFriend = session.user.email === 'leemyt@hanmail.net';
+      setResults(canSeeAiFriend ? (data || []) : (data || []).filter(p => p.id !== AI_AGENT_ID));
     }
     setLoading(false);
   };

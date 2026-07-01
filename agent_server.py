@@ -53,6 +53,8 @@ app.add_middleware(
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
+OLLAMA_NUM_CTX  = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))   # 컨텍스트 크기 (기본 8192)
+OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "2048"))  # 최대 응답 토큰
 
 def _is_local_model() -> bool:
     """Gemini가 아닌 로컬(Ollama) 모델 여부."""
@@ -595,6 +597,12 @@ async def _call_openai_compat(conversation: list, websocket) -> tuple[str, list,
         tools=tools_openai,
         tool_choice="auto",
         stream=True,
+        extra_body={
+            "options": {
+                "num_ctx": OLLAMA_NUM_CTX,
+                "num_predict": OLLAMA_NUM_PREDICT,
+            }
+        },
     )
     async for chunk in stream:
             delta = chunk.choices[0].delta if chunk.choices else None

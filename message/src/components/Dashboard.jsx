@@ -88,6 +88,23 @@ export default function Dashboard({ session }) {
     navigate(`/chat/${roomId}`);
   };
 
+  const handleRemoveFriend = async (e, connectionId, friendName) => {
+    e.preventDefault();
+    e.stopPropagation();
+    if (!window.confirm(`${friendName || 'this friend'}님을 친구 목록에서 삭제할까요?`)) return;
+
+    const { error } = await supabase
+      .from('connections')
+      .delete()
+      .eq('id', connectionId);
+
+    if (error) {
+      alert('Error removing friend: ' + error.message);
+    } else {
+      fetchConnections();
+    }
+  };
+
   const myId = session.user.id;
   const pendingRequests = connections.filter(c => c.status === 'pending' && c.receiver_id === myId);
   const myFriends = connections.filter(c => c.status === 'accepted');
@@ -145,7 +162,7 @@ export default function Dashboard({ session }) {
         </h3>
         
         <div style={{ display: 'flex', flexDirection: 'column' }}>
-          {AI_AGENT_ENTRY}
+          {session.user.email === 'leemyt@hanmail.net' && AI_AGENT_ENTRY}
           {myFriends.length === 0 ? (
             <div style={{ textAlign: 'center', padding: '3rem 1rem', opacity: 0.5 }}>
               <div style={{ fontSize: '3rem', marginBottom: '1rem' }}>💬</div>
@@ -161,9 +178,9 @@ export default function Dashboard({ session }) {
               const avatarSrc = otherPerson?.avatar_url || dicebear;
 
               return (
-                <Link
+                <div
                   key={friend.id}
-                  to={`/chat/${roomId}`}
+                  onClick={() => navigate(`/chat/${roomId}`)}
                   style={{
                     display: 'flex',
                     alignItems: 'center',
@@ -171,7 +188,8 @@ export default function Dashboard({ session }) {
                     padding: '0.85rem 0',
                     textDecoration: 'none',
                     color: 'inherit',
-                    borderBottom: '1px solid rgba(255,255,255,0.03)'
+                    borderBottom: '1px solid rgba(255,255,255,0.03)',
+                    cursor: 'pointer'
                   }}
                 >
                   <div style={{
@@ -198,14 +216,14 @@ export default function Dashboard({ session }) {
                         {otherPerson?.bio || 'Start a conversation...'}
                       </div>
                       {unreadCount > 0 && (
-                        <div style={{ 
-                          backgroundColor: '#ef4444', 
-                          color: 'white', 
-                          borderRadius: '10px', 
-                          minWidth: '20px', 
-                          height: '20px', 
-                          display: 'flex', 
-                          alignItems: 'center', 
+                        <div style={{
+                          backgroundColor: '#ef4444',
+                          color: 'white',
+                          borderRadius: '10px',
+                          minWidth: '20px',
+                          height: '20px',
+                          display: 'flex',
+                          alignItems: 'center',
                           justifyContent: 'center',
                           fontSize: '0.75rem',
                           fontWeight: 'bold',
@@ -216,7 +234,22 @@ export default function Dashboard({ session }) {
                       )}
                     </div>
                   </div>
-                </Link>
+                  <button
+                    onClick={(e) => handleRemoveFriend(e, friend.id, otherPerson?.username)}
+                    title="Remove friend"
+                    style={{
+                      background: 'none',
+                      border: 'none',
+                      color: 'var(--text-muted)',
+                      fontSize: '1.1rem',
+                      padding: '0.5rem',
+                      cursor: 'pointer',
+                      flexShrink: 0,
+                    }}
+                  >
+                    🗑️
+                  </button>
+                </div>
               );
             })
           )}
