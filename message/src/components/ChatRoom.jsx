@@ -71,7 +71,17 @@ const CopyButton = ({ text, isMe }) => {
   );
 };
 
-const ReceivedImage = ({ filePath }) => {
+// 암호화 첨부파일 복호화 — 평문(AI 발신·구버전) 파일은 그대로 반환
+const decryptBlob = async (buffer, encKey) => {
+  if (encKey) {
+    try {
+      return new Blob([await cryptoUtils.decryptBytes(buffer, encKey)]);
+    } catch { /* 평문 파일 — fallthrough */ }
+  }
+  return new Blob([buffer]);
+};
+
+const ReceivedImage = ({ filePath, encKey }) => {
   const [state, setState] = useState('idle'); // idle | loading | loaded | expired
   const [blobUrl, setBlobUrl] = useState(null);
   const blobRef = useRef(null);
@@ -88,7 +98,7 @@ const ReceivedImage = ({ filePath }) => {
       const res = await fetch(data.signedUrl);
       if (!res.ok) { setState('expired'); return; }
 
-      const blob = await res.blob();
+      const blob = await decryptBlob(await res.arrayBuffer(), encKey);
       blobRef.current = blob;
       setBlobUrl(URL.createObjectURL(blob));
       setState('loaded');
@@ -120,7 +130,7 @@ const ReceivedImage = ({ filePath }) => {
   );
 };
 
-const ReceivedFile = ({ filePath, fileName }) => {
+const ReceivedFile = ({ filePath, fileName, encKey }) => {
   // idle → fetching → ready(blob in ref) → done | expired
   const [state, setState] = useState('idle');
   const blobRef = useRef(null);
@@ -137,7 +147,7 @@ const ReceivedFile = ({ filePath, fileName }) => {
       const res = await fetch(data.signedUrl);
       if (!res.ok) { setState('expired'); return; }
 
-      blobRef.current = await res.blob();
+      blobRef.current = await decryptBlob(await res.arrayBuffer(), encKey);
       setState('ready');
       await supabase.storage.from('chat-images').remove([filePath]);
     } catch {
@@ -180,7 +190,6 @@ const ReceivedFile = ({ filePath, fileName }) => {
 
 const AI_AGENT_ID = 'a04fce0a-02f8-4040-962a-22d7d98851f0';
 const AI_PREFIX = '_ai_:';
-const STATUS_PREFIX = '_ai_status_:';
 
 
 const ChatRoom = ({ session }) => {
@@ -198,17 +207,62 @@ const ChatRoom = ({ session }) => {
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [pendingFiles, setPendingFiles] = useState([]); // [{file, type:'image'|'file', previewUrl}]
   const messagesEndRef = useRef(null);
-  const channelRef = useRef(null);
   const imageInputRef = useRef(null);
   const fileInputRef = useRef(null);
   const attachMenuRef = useRef(null);
-  const { setActiveRoom, markAsRead } = useChat();
+  const { setActiveRoom } = useChat();
 
   const myId = session.user.id;
   const friendId = roomId.split('_').find(id => id !== myId);
 
+  // 읽음 확인 전송: pending row insert → DB 트리거가 상대 채널로 broadcast
+  const sendReadReceipt = () => {
+    supabase.from('pending_messages').insert({
+      sender_id: myId, receiver_id: friendId, room_id: roomId,
+      encrypted_payload: '', message_id: window.crypto.randomUUID(),
+      timestamp: new Date().toISOString(), event: 'read_receipt',
+    }).then(({ error }) => { if (error) console.error('Read receipt failed:', error); });
+  };
+
+  // ChatContext 가 검증·복호화·저장까지 마친 이벤트를 받아 화면만 갱신
+  const handleRoomEvent = (evt) => {
+    if (evt.type === 'message') {
+      setMessages(prev => prev.find(m => m.messageId === evt.message.messageId) ? prev : [...prev, evt.message]);
+      sendReadReceipt();
+    } else if (evt.type === 'delete') {
+      setMessages(prev => prev.filter(m => m.messageId !== evt.messageId));
+    } else if (evt.type === 'clear') {
+      setMessages([]);
+    } else if (evt.type === 'read') {
+      setMessages(prev => prev.map(m => m.sender === myId ? { ...m, recipientRead: true } : m));
+    } else if (evt.type === 'ai_status') {
+      // 같은 messageId 로 갱신되는 진행 상태 버블
+      setAiProcessing(true);
+      setMessages(prev => {
+        const exists = prev.find(m => m.messageId === evt.message.messageId);
+        if (exists) return prev.map(m => m.messageId === evt.message.messageId ? evt.message : m);
+        return [...prev, evt.message];
+      });
+    } else if (evt.type === 'ai_message') {
+      setAiProcessing(false);
+      setMessages(prev => {
+        const withoutStatus = prev.filter(m => !m.isStatus);
+        return withoutStatus.find(m => m.messageId === evt.message.messageId)
+          ? withoutStatus : [...withoutStatus, evt.message];
+      });
+      // 탭이 백그라운드일 때 브라우저 알림 표시
+      if (document.hidden && Notification.permission === 'granted') {
+        new Notification('AI Friend 💬', {
+          body: evt.message.text.replace(/[#*`_~]/g, '').slice(0, 120),
+          icon: '/freeChat/icon.png',
+          tag: 'ai-msg',
+        });
+      }
+    }
+  };
+
   useEffect(() => {
-    setActiveRoom(roomId);
+    setActiveRoom(roomId, handleRoomEvent);
 
     const init = async () => {
       const localMsgs = await dbUtils.getMessagesByRoom(roomId);
@@ -248,6 +302,8 @@ const ChatRoom = ({ session }) => {
         const keys = await cryptoUtils.deriveRoomKeys(privateKey, friendPubKey);
         setEncKey(keys.encKey);
         setSigKey(keys.sigKey);
+        // 방 진입을 상대에게 알림 (밀린 메시지 읽음 처리)
+        sendReadReceipt();
       } catch (e) {
         setKeyError('Failed to establish secure channel.');
         console.error('[ChatRoom] Key derivation failed:', e);
@@ -258,184 +314,12 @@ const ChatRoom = ({ session }) => {
     return () => setActiveRoom(null);
   }, [roomId, friendId]);
 
-  useEffect(() => {
-    if (!encKey || !sigKey) return;
-
-    const channel = supabase.channel(`room:${roomId}`, {
-      config: { broadcast: { self: false } },
-    });
-    channelRef.current = channel;
-
-    channel.on('broadcast', { event: '*' }, async (eventPayload) => {
-      const { event, payload } = eventPayload;
-
-      if (event === 'message') {
-        const { sender, encryptedText, roomId: msgRoomId, messageId, timestamp, sig } = payload;
-        if (msgRoomId !== roomId || !sig) return;
-        if (sender !== friendId) return;
-
-        try {
-          if (!await cryptoUtils.verify(sigKey, { sender, roomId, messageId, timestamp }, sig)) return;
-          const text = await cryptoUtils.decrypt(encryptedText, encKey);
-          const newMsg = { messageId, roomId, sender, text, timestamp, read: true, recipientRead: false };
-          await dbUtils.saveMessage(newMsg);
-          setMessages(prev => prev.find(m => m.messageId === messageId) ? prev : [...prev, newMsg]);
-
-          // Send read receipt back to sender
-          markAsRead(roomId);
-          const readPayload = {
-            type: 'broadcast',
-            event: 'read_receipt',
-            payload: { roomId, readerId: myId },
-          };
-          if (channelRef.current) channelRef.current.send(readPayload);
-          const userChannel = supabase.channel(`user:${sender}`);
-          userChannel.subscribe(async (s) => {
-            if (s === 'SUBSCRIBED') {
-              await userChannel.send(readPayload);
-              setTimeout(() => supabase.removeChannel(userChannel), 1000);
-            }
-          });
-        } catch (e) {
-          console.error('Failed to decrypt message:', e);
-        }
-
-      } else if (event === 'delete_message') {
-        const { messageId, sender, roomId: msgRoomId, sig } = payload;
-        if (!messageId || !sig || sender !== friendId) return;
-        const rid = msgRoomId || roomId;
-        try {
-          if (!await cryptoUtils.verify(sigKey, { sender, roomId: rid, messageId }, sig)) return;
-          setMessages(prev => prev.filter(m => m.messageId !== messageId));
-          await dbUtils.deleteMessage(messageId);
-        } catch (e) {
-          console.error('Failed to process delete:', e);
-        }
-
-      } else if (event === 'clear_chat') {
-        const { roomId: msgRoomId, sender, sig } = payload;
-        if (!sig || sender !== friendId) return;
-        const rid = msgRoomId || roomId;
-        try {
-          if (!await cryptoUtils.verify(sigKey, { sender, roomId: rid }, sig)) return;
-          setMessages([]);
-          await dbUtils.clearRoomMessages(roomId);
-        } catch (e) {
-          console.error('Failed to process clear:', e);
-        }
-
-      } else if (event === 'read_receipt') {
-        const { roomId: rId, readerId } = payload;
-        if (rId === roomId && readerId === friendId) {
-          setMessages(prev => prev.map(m =>
-            m.sender === myId ? { ...m, recipientRead: true } : m
-          ));
-        }
-      }
-    }).subscribe((status) => {
-      if (status === 'SUBSCRIBED') {
-        console.log('Joined room:', roomId);
-        // Notify sender that we've read their messages
-        const readPayload = {
-          type: 'broadcast',
-          event: 'read_receipt',
-          payload: { roomId, readerId: myId },
-        };
-        channel.send(readPayload);
-        const userChannel = supabase.channel(`user:${friendId}`);
-        userChannel.subscribe(async (s) => {
-          if (s === 'SUBSCRIBED') {
-            await userChannel.send(readPayload);
-            setTimeout(() => supabase.removeChannel(userChannel), 1000);
-          }
-        });
-      }
-    });
-
-    return () => supabase.removeChannel(channel);
-  }, [encKey, sigKey, roomId, friendId]);
-
   // 알림 권한 요청 (최초 1회)
   useEffect(() => {
     if ('Notification' in window && Notification.permission === 'default') {
       Notification.requestPermission();
     }
   }, []);
-
-  // AI 메시지 처리 공통 함수
-  const processAiRow = async (row) => {
-    const payload = row.encrypted_payload || '';
-    if (payload.startsWith(STATUS_PREFIX)) {
-      const statusText = payload.slice(STATUS_PREFIX.length);
-      const statusMsg = { messageId: row.message_id, roomId, sender: row.sender_id, text: statusText, timestamp: row.timestamp, read: true, isStatus: true };
-      setAiProcessing(true);
-      setMessages(prev => {
-        const exists = prev.find(m => m.messageId === row.message_id);
-        if (exists) return prev.map(m => m.messageId === row.message_id ? statusMsg : m);
-        return [...prev, statusMsg];
-      });
-      await supabase.from('pending_messages').delete().eq('id', row.id);
-    } else if (payload.startsWith(AI_PREFIX)) {
-      const text = payload.slice(AI_PREFIX.length);
-      const newMsg = { messageId: row.message_id, roomId, sender: row.sender_id, text, timestamp: row.timestamp, read: true, recipientRead: true };
-      await dbUtils.saveMessage(newMsg);
-      setAiProcessing(false);
-      setMessages(prev => {
-        const withoutStatus = prev.filter(m => !m.isStatus);
-        return withoutStatus.find(m => m.messageId === row.message_id) ? withoutStatus : [...withoutStatus, newMsg];
-      });
-      await supabase.from('pending_messages').delete().eq('id', row.id);
-      // 탭이 백그라운드일 때 브라우저 알림 표시
-      if (document.hidden && Notification.permission === 'granted') {
-        new Notification('AI Friend 💬', {
-          body: text.replace(/[#*`_~]/g, '').slice(0, 120),
-          icon: '/freeChat/icon.png',
-          tag: 'ai-msg',
-        });
-      }
-    }
-  };
-
-  // Supabase Realtime 구독 (폴링 대체 — 즉시 알림)
-  useEffect(() => {
-    if (!isAiRoom) return;
-
-    // 폴링 함수 — Realtime이 동작하지 않는 경우 fallback
-    const poll = async () => {
-      const { data } = await supabase
-        .from('pending_messages')
-        .select('*')
-        .eq('room_id', roomId)
-        .eq('sender_id', AI_AGENT_ID)
-        .order('timestamp', { ascending: true });
-      if (!data?.length) return;
-      for (const row of data) await processAiRow(row);
-    };
-
-    // 초기 로드 + 3초 폴링 (Realtime fallback)
-    poll();
-    const pollId = setInterval(poll, 3000);
-
-    // Realtime 구독 (즉시 알림 — 동작하면 폴링보다 빠름)
-    const channel = supabase
-      .channel(`ai-pending-${roomId}`)
-      .on('postgres_changes', {
-        event: 'INSERT',
-        schema: 'public',
-        table: 'pending_messages',
-        filter: `room_id=eq.${roomId}`,
-      }, ({ new: row }) => {
-        if (row.sender_id === AI_AGENT_ID) {
-          processAiRow(row).catch(e => console.error('[AI msg]', e));
-        }
-      })
-      .subscribe();
-
-    return () => {
-      clearInterval(pollId);
-      supabase.removeChannel(channel);
-    };
-  }, [isAiRoom, roomId]);
 
   useEffect(() => {
     if (!showAttachMenu) return;
@@ -456,9 +340,11 @@ const ChatRoom = ({ session }) => {
     const ext = file.name.split('.').pop() || 'jpg';
     const filePath = `${roomId}/${window.crypto.randomUUID()}.${ext}`;
 
+    // 첨부파일도 방 키로 E2E 암호화 후 업로드 (서버에는 암호문만 저장)
+    const encBytes = await cryptoUtils.encryptBytes(await file.arrayBuffer(), encKey);
     const { error: uploadError } = await supabase.storage
       .from('chat-images')
-      .upload(filePath, file, { contentType: file.type });
+      .upload(filePath, new Blob([encBytes]), { contentType: 'application/octet-stream' });
     if (uploadError) throw uploadError;
 
     const localImageUrl = URL.createObjectURL(file);
@@ -467,40 +353,29 @@ const ChatRoom = ({ session }) => {
     const messageId = window.crypto.randomUUID();
     const timestamp = new Date().toISOString();
     const sender = myId;
-    const sig = await cryptoUtils.sign(sigKey, { sender, roomId, messageId, timestamp });
-
-    const broadcastPayload = {
-      type: 'broadcast', event: 'message',
-      payload: { sender, encryptedText, roomId, messageId, timestamp, sig },
-    };
+    const sig = await cryptoUtils.sign(sigKey, { sender, roomId, messageId, encryptedText });
 
     const myMessage = { messageId, roomId, sender, text: messageText, timestamp, read: true, recipientRead: false, localImageUrl };
     await dbUtils.saveMessage(myMessage);
     setMessages(prev => [...prev, myMessage]);
 
-    if (channelRef.current) channelRef.current.send(broadcastPayload);
-    const userChannel = supabase.channel(`user:${friendId}`);
-    userChannel.subscribe(async (status) => {
-      if (status === 'SUBSCRIBED') {
-        await userChannel.send(broadcastPayload);
-        setTimeout(() => supabase.removeChannel(userChannel), 1000);
-      }
-    });
-
-    await supabase.from('pending_messages').insert({
+    const { error: insErr } = await supabase.from('pending_messages').insert({
       sender_id: sender, receiver_id: friendId,
       room_id: roomId, encrypted_payload: encryptedText,
-      message_id: messageId, timestamp,
+      message_id: messageId, timestamp, sig, event: 'message',
     });
+    if (insErr) throw insErr;
   };
 
   const sendFile = async (file) => {
     const ext = file.name.split('.').pop() || 'bin';
     const filePath = `files/${roomId}/${window.crypto.randomUUID()}.${ext}`;
 
+    // 첨부파일도 방 키로 E2E 암호화 후 업로드 (서버에는 암호문만 저장)
+    const encBytes = await cryptoUtils.encryptBytes(await file.arrayBuffer(), encKey);
     const { error: uploadError } = await supabase.storage
       .from('chat-images')
-      .upload(filePath, file, { contentType: file.type });
+      .upload(filePath, new Blob([encBytes]), { contentType: 'application/octet-stream' });
     if (uploadError) throw uploadError;
 
     const messageText = `${FILE_PREFIX}${filePath}|${file.name}`;
@@ -508,31 +383,18 @@ const ChatRoom = ({ session }) => {
     const messageId = window.crypto.randomUUID();
     const timestamp = new Date().toISOString();
     const sender = myId;
-    const sig = await cryptoUtils.sign(sigKey, { sender, roomId, messageId, timestamp });
-
-    const broadcastPayload = {
-      type: 'broadcast', event: 'message',
-      payload: { sender, encryptedText, roomId, messageId, timestamp, sig },
-    };
+    const sig = await cryptoUtils.sign(sigKey, { sender, roomId, messageId, encryptedText });
 
     const myMessage = { messageId, roomId, sender, text: messageText, timestamp, read: true, recipientRead: false };
     await dbUtils.saveMessage(myMessage);
     setMessages(prev => [...prev, myMessage]);
 
-    if (channelRef.current) channelRef.current.send(broadcastPayload);
-    const userChannel = supabase.channel(`user:${friendId}`);
-    userChannel.subscribe(async (status) => {
-      if (status === 'SUBSCRIBED') {
-        await userChannel.send(broadcastPayload);
-        setTimeout(() => supabase.removeChannel(userChannel), 1000);
-      }
-    });
-
-    await supabase.from('pending_messages').insert({
+    const { error: insErr } = await supabase.from('pending_messages').insert({
       sender_id: sender, receiver_id: friendId,
       room_id: roomId, encrypted_payload: encryptedText,
-      message_id: messageId, timestamp,
+      message_id: messageId, timestamp, sig, event: 'message',
     });
+    if (insErr) throw insErr;
   };
 
   const sendAiImage = async (file) => {
@@ -677,28 +539,12 @@ const ChatRoom = ({ session }) => {
       const timestamp = new Date().toISOString();
       const sender = myId;
 
-      const sig = await cryptoUtils.sign(sigKey, { sender, roomId, messageId, timestamp });
-
-      const broadcastPayload = {
-        type: 'broadcast',
-        event: 'message',
-        payload: { sender, encryptedText, roomId, messageId, timestamp, sig },
-      };
+      const sig = await cryptoUtils.sign(sigKey, { sender, roomId, messageId, encryptedText });
 
       const myMessage = { messageId, roomId, sender, text: input, timestamp, read: true, recipientRead: false };
       await dbUtils.saveMessage(myMessage);
       setMessages(prev => [...prev, myMessage]);
       setInput('');
-
-      if (channelRef.current) channelRef.current.send(broadcastPayload);
-
-      const userChannel = supabase.channel(`user:${friendId}`);
-      userChannel.subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          await userChannel.send(broadcastPayload);
-          setTimeout(() => supabase.removeChannel(userChannel), 1000);
-        }
-      });
 
       const { error: insErr } = await supabase.from('pending_messages').insert({
         sender_id: sender,
@@ -707,6 +553,8 @@ const ChatRoom = ({ session }) => {
         encrypted_payload: encryptedText,
         message_id: messageId,
         timestamp,
+        sig,
+        event: 'message',
       });
       if (insErr) console.error('Pending insert failed:', insErr);
 
@@ -740,23 +588,14 @@ const ChatRoom = ({ session }) => {
 
       const sender = myId;
       const sig = await cryptoUtils.sign(sigKey, { sender, roomId, messageId });
-      const deletePayload = {
-        type: 'broadcast',
-        event: 'delete_message',
-        payload: { messageId, sender, roomId, sig },
-      };
 
-      if (channelRef.current) await channelRef.current.send(deletePayload);
-
-      const userChannel = supabase.channel(`user:${friendId}`);
-      userChannel.subscribe(async (status) => {
-        if (status === 'SUBSCRIBED') {
-          await userChannel.send(deletePayload);
-          setTimeout(() => supabase.removeChannel(userChannel), 1000);
-        }
-      });
-
+      // 미전달 원본을 먼저 회수한 뒤 삭제 지시 row 전송 (같은 message_id 재사용)
       await supabase.from('pending_messages').delete().eq('message_id', messageId);
+      await supabase.from('pending_messages').insert({
+        sender_id: sender, receiver_id: friendId, room_id: roomId,
+        encrypted_payload: '', message_id: messageId,
+        timestamp: new Date().toISOString(), sig, event: 'delete_message',
+      });
     } catch (e) {
       console.error('Error deleting message:', e);
     }
@@ -813,26 +652,18 @@ const ChatRoom = ({ session }) => {
       if (!isAiRoom) {
         const sender = myId;
         const sig = await cryptoUtils.sign(sigKey, { sender, roomId });
-        const clearPayload = {
-          type: 'broadcast',
-          event: 'clear_chat',
-          payload: { roomId, sender, sig },
-        };
-
-        if (channelRef.current) await channelRef.current.send(clearPayload);
-
-        const userChannel = supabase.channel(`user:${friendId}`);
-        userChannel.subscribe(async (status) => {
-          if (status === 'SUBSCRIBED') {
-            await userChannel.send(clearPayload);
-            setTimeout(() => supabase.removeChannel(userChannel), 1000);
-          }
-        });
 
         const storagePaths = messages.map(m => extractStoragePath(m.text)).filter(Boolean);
         if (storagePaths.length > 0) {
           await supabase.storage.from('chat-images').remove(storagePaths);
         }
+
+        // 전체 삭제 지시 row 전송 (위에서 방 전체 pending 삭제 후 insert)
+        await supabase.from('pending_messages').insert({
+          sender_id: sender, receiver_id: friendId, room_id: roomId,
+          encrypted_payload: '', message_id: window.crypto.randomUUID(),
+          timestamp: new Date().toISOString(), sig, event: 'clear_chat',
+        });
       }
     } catch (e) {
       console.error('Error clearing chat:', e);
@@ -931,7 +762,7 @@ const ChatRoom = ({ session }) => {
                         ? <img src={msg.localImageUrl} alt="sent" style={{ maxWidth: '220px', borderRadius: '10px', display: 'block' }} onError={(e) => { e.target.replaceWith(Object.assign(document.createElement('span'), { textContent: '📷 사진 전송됨', style: 'opacity:0.6' })); }} />
                         : <span style={{ opacity: 0.6 }}>📷 사진 전송됨</span>
                     ) : (
-                      <ReceivedImage filePath={msg.text.substring(IMG_PREFIX.length)} />
+                      <ReceivedImage filePath={msg.text.substring(IMG_PREFIX.length)} encKey={encKey} />
                     )
                   ) : msg.text?.startsWith(FILE_PREFIX) ? (() => {
                     const content = msg.text.substring(FILE_PREFIX.length);
@@ -940,7 +771,7 @@ const ChatRoom = ({ session }) => {
                     const fileName = content.substring(sepIdx + 1);
                     return isMe
                       ? <div style={{ display: 'flex', alignItems: 'center', gap: '0.5rem' }}><span style={{ fontSize: '1.4rem' }}>📎</span><span style={{ fontSize: '0.85rem', wordBreak: 'break-all' }}>{fileName}</span></div>
-                      : <ReceivedFile filePath={filePath} fileName={fileName} />;
+                      : <ReceivedFile filePath={filePath} fileName={fileName} encKey={encKey} />;
                   })() : (!isMe && isAiRoom) ? (
                     <ReactMarkdown
                       remarkPlugins={[remarkGfm]}
