@@ -83,6 +83,24 @@ fi
 "$SCRIPT_DIR/.venv/bin/python3" agent_server.py &
 AGENT_PID=$!
 
+# YouTube Music 다운로드 서버 실행 (download_youtube_audio 도구가 사용)
+YTMUSIC_DIR="${YTMUSIC_DIR:-$HOME/Documents/opencode/YouTube_music}"
+if [ -d "$YTMUSIC_DIR" ]; then
+  echo "YouTube Music 서버 시작: http://localhost:3000"
+  cd "$YTMUSIC_DIR"
+  if [ ! -d "node_modules" ]; then
+    echo "YouTube Music 패키지 설치 중..."
+    npm install --silent
+  fi
+  if [ ! -f "dist/backend/server.js" ]; then
+    echo "YouTube Music 빌드 중..."
+    npm run build
+  fi
+  npm start &
+  YTMUSIC_PID=$!
+  cd "$SCRIPT_DIR"
+fi
+
 # React dev 서버 실행 (AGENT_ONLY=1 이면 생략)
 if [ -z "$AGENT_ONLY" ] && [ -d "$SCRIPT_DIR/message" ]; then
   echo "React dev 서버 시작: http://localhost:5173"
@@ -98,6 +116,6 @@ if [ -z "$AGENT_ONLY" ] && [ -d "$SCRIPT_DIR/message" ]; then
 fi
 
 # Ctrl+C 시 모든 프로세스 종료
-trap "kill $AGENT_PID $VITE_PID $CAFFEINATE_PID 2>/dev/null; exit" INT TERM
+trap "kill $AGENT_PID $VITE_PID $YTMUSIC_PID $CAFFEINATE_PID 2>/dev/null; exit" INT TERM
 
 wait $AGENT_PID

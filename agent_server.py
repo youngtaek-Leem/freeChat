@@ -55,6 +55,7 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.1-flash-lite")
 OLLAMA_BASE_URL = os.environ.get("OLLAMA_BASE_URL", "http://127.0.0.1:11434/v1")
 OLLAMA_NUM_CTX  = int(os.environ.get("OLLAMA_NUM_CTX", "8192"))   # 컨텍스트 크기 (기본 8192)
 OLLAMA_NUM_PREDICT = int(os.environ.get("OLLAMA_NUM_PREDICT", "2048"))  # 최대 응답 토큰
+YOUTUBE_MUSIC_API = os.environ.get("YOUTUBE_MUSIC_API", "http://127.0.0.1:3000")
 
 def _is_local_model() -> bool:
     """Gemini가 아닌 로컬(Ollama) 모델 여부."""
@@ -799,6 +800,32 @@ TOOLS = [
             },
         },
     },
+    # ── Media ──
+    {
+        "type": "function",
+        "function": {
+            "name": "download_youtube_media",
+            "description": (
+                "Download a YouTube video and save it to the user's iCloud Drive. Use this whenever the user "
+                "sends a youtube.com/youtu.be link and asks to download or save it. By default this extracts "
+                "just the audio as an MP3 (saved to the music library) — use this unless the user explicitly "
+                "asks for the video itself (e.g. '동영상으로 저장해줘', 'download the video', 'as mp4'), in "
+                "which case pass format='mp4' to save the full video instead."
+            ),
+            "parameters": {
+                "type": "object",
+                "properties": {
+                    "url": {"type": "string", "description": "The YouTube video URL"},
+                    "format": {
+                        "type": "string",
+                        "enum": ["mp3", "mp4"],
+                        "description": "'mp3' (default) for audio-only, 'mp4' only if the user explicitly asked for the video itself",
+                    },
+                },
+                "required": ["url"],
+            },
+        },
+    },
     # ── Screen ──
     {
         "type": "function",
@@ -1372,6 +1399,7 @@ TOOL_MESSAGES: dict[str, tuple[str, str]] = {
     "fetch_webpage":    ("📄", "웹 페이지 불러오는 중"),
     "find_app":         ("🔎", "앱 검색 중"),
     "take_screenshot":  ("📷", "화면 캡처 중"),
+    "download_youtube_media": ("🎵", "유튜브 다운로드 중"),
     "execute_shell":    ("⚙️",  "명령 실행 중"),
     "control_app":      ("🖥️",  "앱 제어 중"),
     "run_python":       ("🐍", "Python 코드 실행 중"),
@@ -1410,6 +1438,7 @@ LONG_RUNNING_TOOLS = {
     "web_search", "fetch_webpage", "run_python",
     "execute_shell", "browser_navigate", "take_screenshot",
     "run_claude", "capture_and_send", "send_file", "send_files_zipped",
+    "download_youtube_media",
 }
 
 
@@ -1446,6 +1475,7 @@ RISK = {
     "find_app":  "low",
     "web_search": "low",
     "take_screenshot": "low",
+    "download_youtube_media": "low",
     "list_chat_history":     "low",
     "load_chat_history":     "low",
     "list_claude_tasks":     "low",
@@ -1533,6 +1563,8 @@ def build_system_prompt(workspace: Path | None, guide: str | None = None) -> str
         "- For simple shell operations → use execute_shell\n"
         "- When a task seems difficult, think: 'Can I write 10 lines of Python to solve this?' If yes, use run_python.\n"
         "- After taking a screenshot or browser_screenshot, describe what you see in detail.\n"
+        "- If the user sends a YouTube link and wants it downloaded/saved → use download_youtube_media "
+        "(defaults to mp3 audio; pass format='mp4' only if they explicitly ask for the video itself)\n"
         "- IMPORTANT: When you call run_claude, do NOT also call write_file, execute_shell, or run_python "
         "for the same task in the same turn. run_claude handles file and shell operations internally."
     )
@@ -1857,6 +1889,36 @@ async def run_tool(name: str, args: dict, workspace: "Path | None" = None) -> st
                 if len(text) > 4000:
                     text = text[:4000] + "... (truncated)"
                 return text
+
+        # ── Media ──
+        elif name == "download_youtube_media":
+            url = args["url"]
+            fmt = args.get("format") or "mp3"
+            is_video = fmt == "mp4"
+            async with httpx.AsyncClient(timeout=15) as client:
+                try:
+                    r = await client.post(f"{YOUTUBE_MUSIC_API}/api/download", json={"url": url, "format": fmt})
+                except httpx.RequestError:
+                    return f"YouTube Music 다운로드 서버({YOUTUBE_MUSIC_API})에 연결할 수 없습니다. 서버가 실행 중인지 확인해주세요."
+                data = r.json()
+                if not data.get("success"):
+                    return f"다운로드 시작 실패: {data.get('error', '알 수 없는 오류')}"
+                task_id = data["data"]["taskId"]
+
+                max_wait_min = 10 if is_video else 5  # 영상은 파일이 커서 더 오래 걸림
+                for _ in range(max_wait_min * 12):  # 5초 간격
+                    await asyncio.sleep(5)
+                    r = await client.get(f"{YOUTUBE_MUSIC_API}/api/status/{task_id}")
+                    status_data = r.json().get("data", {})
+                    status = status_data.get("status")
+                    if status == "completed":
+                        meta = status_data.get("metadata") or {}
+                        title = meta.get("title", "제목 없음")
+                        kind = "영상" if is_video else "음원"
+                        return f"✅ {kind} 다운로드 완료: {title}\n저장 위치: {status_data.get('outputPath')}"
+                    if status == "failed":
+                        return f"다운로드 실패: {status_data.get('error', '알 수 없는 오류')}"
+            return f"다운로드가 {max_wait_min}분 내에 끝나지 않았습니다."
 
         # ── App finder ──
         elif name == "find_app":
