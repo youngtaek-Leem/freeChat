@@ -9,6 +9,7 @@ import remarkGfm from 'remark-gfm';
 
 const IMG_PREFIX = '_img_:';
 const FILE_PREFIX = '_file_:';
+const MIN_PROGRESS_MS = 500;
 
 // **bold**한국어 패턴: 닫힘 ** 바로 뒤 한국어는 zero-width space 삽입해 파싱 보정
 const fixMarkdown = (text) => {
@@ -473,6 +474,7 @@ const ChatRoom = ({ session }) => {
     if (!isAiRoom && (!encKey || !sigKey)) return;
     if (files.length === 0) return;
     const limited = Array.from(files).slice(0, 10);
+    const startedAt = Date.now();
     let failed = 0;
     for (let i = 0; i < limited.length; i++) {
       const file = limited[i];
@@ -488,6 +490,8 @@ const ChatRoom = ({ session }) => {
         failed++;
       }
     }
+    const remaining = MIN_PROGRESS_MS - (Date.now() - startedAt);
+    if (remaining > 0) await new Promise(r => setTimeout(r, remaining));
     setUploadProgress(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
     if (failed > 0) alert(`${failed}개 파일 전송에 실패했습니다.`);
@@ -497,6 +501,7 @@ const ChatRoom = ({ session }) => {
     if (!isAiRoom && (!encKey || !sigKey)) return;
     if (files.length === 0) return;
     const limited = Array.from(files).slice(0, 10);
+    const startedAt = Date.now();
     let failed = 0;
     for (let i = 0; i < limited.length; i++) {
       const file = limited[i];
@@ -512,6 +517,8 @@ const ChatRoom = ({ session }) => {
         failed++;
       }
     }
+    const remaining = MIN_PROGRESS_MS - (Date.now() - startedAt);
+    if (remaining > 0) await new Promise(r => setTimeout(r, remaining));
     setUploadProgress(null);
     if (imageInputRef.current) imageInputRef.current.value = '';
     if (failed > 0) alert(`${failed}장 전송에 실패했습니다.`);
@@ -567,29 +574,31 @@ const ChatRoom = ({ session }) => {
     }
 
     try {
-      const encryptedText = await cryptoUtils.encrypt(input, encKey);
-      const messageId = window.crypto.randomUUID();
-      const timestamp = new Date().toISOString();
-      const sender = myId;
+      if (input.trim()) {
+        const encryptedText = await cryptoUtils.encrypt(input, encKey);
+        const messageId = window.crypto.randomUUID();
+        const timestamp = new Date().toISOString();
+        const sender = myId;
 
-      const sig = await cryptoUtils.sign(sigKey, { sender, roomId, messageId, encryptedText });
+        const sig = await cryptoUtils.sign(sigKey, { sender, roomId, messageId, encryptedText });
 
-      const myMessage = { messageId, roomId, sender, text: input, timestamp, read: true, recipientRead: false };
-      await dbUtils.saveMessage(myMessage);
-      setMessages(prev => [...prev, myMessage]);
+        const myMessage = { messageId, roomId, sender, text: input, timestamp, read: true, recipientRead: false };
+        await dbUtils.saveMessage(myMessage);
+        setMessages(prev => [...prev, myMessage]);
+
+        const { error: insErr } = await supabase.from('pending_messages').insert({
+          sender_id: sender,
+          receiver_id: friendId,
+          room_id: roomId,
+          encrypted_payload: encryptedText,
+          message_id: messageId,
+          timestamp,
+          sig,
+          event: 'message',
+        });
+        if (insErr) console.error('Pending insert failed:', insErr);
+      }
       setInput('');
-
-      const { error: insErr } = await supabase.from('pending_messages').insert({
-        sender_id: sender,
-        receiver_id: friendId,
-        room_id: roomId,
-        encrypted_payload: encryptedText,
-        message_id: messageId,
-        timestamp,
-        sig,
-        event: 'message',
-      });
-      if (insErr) console.error('Pending insert failed:', insErr);
 
       // pendingFiles 전송 (일반 채팅)
       if (pendingFiles.length > 0) {
@@ -702,6 +711,8 @@ const ChatRoom = ({ session }) => {
       console.error('Error clearing chat:', e);
     }
   };
+
+  const canSend = input.trim().length > 0 || pendingFiles.length > 0;
 
   return (
     <div className="container" style={{
@@ -1036,9 +1047,9 @@ const ChatRoom = ({ session }) => {
           ) : (
             <button type="submit" className="btn" style={{
               width: '45px', height: '45px', borderRadius: '50%', padding: 0, minWidth: '45px',
-              backgroundColor: input.trim() && (isAiRoom || !keyError) ? 'var(--primary-color)' : 'rgba(255,255,255,0.1)',
+              backgroundColor: canSend && (isAiRoom || !keyError) ? 'var(--primary-color)' : 'rgba(255,255,255,0.1)',
               transition: 'background-color 0.3s',
-            }} disabled={!input.trim() || (!isAiRoom && !!keyError)}>
+            }} disabled={!canSend || (!isAiRoom && !!keyError)}>
               ↑
             </button>
           )}
