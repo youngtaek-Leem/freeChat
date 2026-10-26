@@ -1,5 +1,5 @@
 import React, { useEffect, useState, useRef } from 'react';
-import { supabase } from '../supabaseClient';
+import { supabase, supabaseUrl, supabaseAnonKey } from '../supabaseClient';
 import { cryptoUtils } from '../utils/crypto';
 import { dbUtils } from '../utils/db';
 import { useParams, useNavigate, Link } from 'react-router-dom';
@@ -47,6 +47,37 @@ const saveFile = async (blob, fileName) => {
   a.click();
   document.body.removeChild(a);
   URL.revokeObjectURL(url);
+};
+
+// Supabase SDK upload()는 바이트 진행률을 제공하지 않아 XHR로 직접 업로드
+const uploadToStorageWithProgress = async (bucket, path, blob, contentType, onProgress) => {
+  const { data: { session } } = await supabase.auth.getSession();
+  if (!session) throw new Error('Not authenticated');
+
+  const encodedPath = path.split('/').map(encodeURIComponent).join('/');
+
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open('POST', `${supabaseUrl}/storage/v1/object/${bucket}/${encodedPath}`);
+    xhr.setRequestHeader('Authorization', `Bearer ${session.access_token}`);
+    xhr.setRequestHeader('apikey', supabaseAnonKey);
+    xhr.setRequestHeader('Content-Type', contentType || 'application/octet-stream');
+    xhr.setRequestHeader('x-upsert', 'false');
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable && e.total > 0) onProgress?.(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        onProgress?.(1);
+        try { resolve(JSON.parse(xhr.responseText || '{}')); }
+        catch { resolve({}); }
+      } else {
+        reject(new Error(`Upload failed (${xhr.status}): ${xhr.responseText}`));
+      }
+    };
+    xhr.onerror = () => reject(new Error('Upload failed: network error'));
+    xhr.send(blob);
+  });
 };
 
 const CopyButton = ({ text, isMe }) => {
@@ -203,7 +234,7 @@ const ChatRoom = ({ session }) => {
   const [keyError, setKeyError] = useState(null);
   const [isAiRoom, setIsAiRoom] = useState(false);
   const [aiProcessing, setAiProcessing] = useState(false);
-  const [uploadProgress, setUploadProgress] = useState(null); // null | { done, total }
+  const [uploadProgress, setUploadProgress] = useState(null); // null | { done, total, name, percent }
   const [showAttachMenu, setShowAttachMenu] = useState(false);
   const [pendingFiles, setPendingFiles] = useState([]); // [{file, type:'image'|'file', previewUrl}]
   const messagesEndRef = useRef(null);
@@ -336,16 +367,15 @@ const ChatRoom = ({ session }) => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [messages]);
 
-  const sendImage = async (file) => {
+  const sendImage = async (file, onProgress) => {
     const ext = file.name.split('.').pop() || 'jpg';
     const filePath = `${roomId}/${window.crypto.randomUUID()}.${ext}`;
 
     // 첨부파일도 방 키로 E2E 암호화 후 업로드 (서버에는 암호문만 저장)
     const encBytes = await cryptoUtils.encryptBytes(await file.arrayBuffer(), encKey);
-    const { error: uploadError } = await supabase.storage
-      .from('chat-images')
-      .upload(filePath, new Blob([encBytes]), { contentType: 'application/octet-stream' });
-    if (uploadError) throw uploadError;
+    await uploadToStorageWithProgress(
+      'chat-images', filePath, new Blob([encBytes]), 'application/octet-stream', onProgress,
+    );
 
     const localImageUrl = URL.createObjectURL(file);
     const messageText = `${IMG_PREFIX}${filePath}`;
@@ -367,16 +397,15 @@ const ChatRoom = ({ session }) => {
     if (insErr) throw insErr;
   };
 
-  const sendFile = async (file) => {
+  const sendFile = async (file, onProgress) => {
     const ext = file.name.split('.').pop() || 'bin';
     const filePath = `files/${roomId}/${window.crypto.randomUUID()}.${ext}`;
 
     // 첨부파일도 방 키로 E2E 암호화 후 업로드 (서버에는 암호문만 저장)
     const encBytes = await cryptoUtils.encryptBytes(await file.arrayBuffer(), encKey);
-    const { error: uploadError } = await supabase.storage
-      .from('chat-images')
-      .upload(filePath, new Blob([encBytes]), { contentType: 'application/octet-stream' });
-    if (uploadError) throw uploadError;
+    await uploadToStorageWithProgress(
+      'chat-images', filePath, new Blob([encBytes]), 'application/octet-stream', onProgress,
+    );
 
     const messageText = `${FILE_PREFIX}${filePath}|${file.name}`;
     const encryptedText = await cryptoUtils.encrypt(messageText, encKey);
@@ -397,13 +426,12 @@ const ChatRoom = ({ session }) => {
     if (insErr) throw insErr;
   };
 
-  const sendAiImage = async (file) => {
+  const sendAiImage = async (file, onProgress) => {
     const ext = file.name.split('.').pop() || 'jpg';
     const filePath = `${roomId}/${window.crypto.randomUUID()}.${ext}`;
-    const { error: uploadError } = await supabase.storage
-      .from('chat-images')
-      .upload(filePath, file, { contentType: file.type });
-    if (uploadError) throw uploadError;
+    await uploadToStorageWithProgress(
+      'chat-images', filePath, file, file.type, onProgress,
+    );
 
     const localImageUrl = URL.createObjectURL(file);
     const messageText = `${IMG_PREFIX}${filePath}`;
@@ -420,13 +448,12 @@ const ChatRoom = ({ session }) => {
     setAiProcessing(true);
   };
 
-  const sendAiFile = async (file) => {
+  const sendAiFile = async (file, onProgress) => {
     const ext = file.name.split('.').pop() || 'bin';
     const filePath = `files/${roomId}/${window.crypto.randomUUID()}.${ext}`;
-    const { error: uploadError } = await supabase.storage
-      .from('chat-images')
-      .upload(filePath, file, { contentType: file.type });
-    if (uploadError) throw uploadError;
+    await uploadToStorageWithProgress(
+      'chat-images', filePath, file, file.type, onProgress,
+    );
 
     const messageText = `${FILE_PREFIX}${filePath}|${file.name}`;
     const messageId = window.crypto.randomUUID();
@@ -446,17 +473,20 @@ const ChatRoom = ({ session }) => {
     if (!isAiRoom && (!encKey || !sigKey)) return;
     if (files.length === 0) return;
     const limited = Array.from(files).slice(0, 10);
-    setUploadProgress({ done: 0, total: limited.length });
     let failed = 0;
-    for (const file of limited) {
+    for (let i = 0; i < limited.length; i++) {
+      const file = limited[i];
+      const onProgress = (p) => setUploadProgress({
+        done: i, total: limited.length, name: file.name, percent: Math.round(p * 100),
+      });
+      setUploadProgress({ done: i, total: limited.length, name: file.name, percent: 0 });
       try {
-        if (isAiRoom) await sendAiFile(file);
-        else await sendFile(file);
+        if (isAiRoom) await sendAiFile(file, onProgress);
+        else await sendFile(file, onProgress);
       } catch (e) {
         console.error('File send error:', e);
         failed++;
       }
-      setUploadProgress(prev => ({ ...prev, done: prev.done + 1 }));
     }
     setUploadProgress(null);
     if (fileInputRef.current) fileInputRef.current.value = '';
@@ -467,17 +497,20 @@ const ChatRoom = ({ session }) => {
     if (!isAiRoom && (!encKey || !sigKey)) return;
     if (files.length === 0) return;
     const limited = Array.from(files).slice(0, 10);
-    setUploadProgress({ done: 0, total: limited.length });
     let failed = 0;
-    for (const file of limited) {
+    for (let i = 0; i < limited.length; i++) {
+      const file = limited[i];
+      const onProgress = (p) => setUploadProgress({
+        done: i, total: limited.length, name: file.name, percent: Math.round(p * 100),
+      });
+      setUploadProgress({ done: i, total: limited.length, name: file.name, percent: 0 });
       try {
-        if (isAiRoom) await sendAiImage(file);
-        else await sendImage(file);
+        if (isAiRoom) await sendAiImage(file, onProgress);
+        else await sendImage(file, onProgress);
       } catch (e) {
         console.error('Image send error:', e);
         failed++;
       }
-      setUploadProgress(prev => ({ ...prev, done: prev.done + 1 }));
     }
     setUploadProgress(null);
     if (imageInputRef.current) imageInputRef.current.value = '';
@@ -836,6 +869,32 @@ const ChatRoom = ({ session }) => {
         backdropFilter: 'blur(20px)', WebkitBackdropFilter: 'blur(20px)',
         borderTop: '2px solid var(--primary-color)',
       }}>
+        {/* 업로드 진행률 */}
+        {uploadProgress && (() => {
+          const overall = Math.min(100, Math.round(((uploadProgress.done + uploadProgress.percent / 100) / uploadProgress.total) * 100));
+          return (
+            <div style={{ marginBottom: '0.5rem' }}>
+              <div style={{
+                display: 'flex', justifyContent: 'space-between', alignItems: 'center',
+                gap: '0.5rem', marginBottom: 4, fontSize: '0.75rem', color: 'var(--text-muted)',
+              }}>
+                <span style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap', minWidth: 0 }}>
+                  📎 {uploadProgress.name} 업로드 중...
+                </span>
+                <span style={{ flexShrink: 0 }}>
+                  {overall}% ({Math.min(uploadProgress.done + 1, uploadProgress.total)}/{uploadProgress.total})
+                </span>
+              </div>
+              <div style={{ height: 6, borderRadius: 999, background: 'rgba(0,0,0,0.12)', overflow: 'hidden' }}>
+                <div style={{
+                  height: '100%', width: `${overall}%`, background: 'var(--primary-color)',
+                  borderRadius: 999, transition: 'width 0.15s ease',
+                }} />
+              </div>
+            </div>
+          );
+        })()}
+
         {/* 첨부 파일 미리보기 */}
         {pendingFiles.length > 0 && (
           <div style={{ display: 'flex', flexWrap: 'wrap', gap: '0.5rem', marginBottom: '0.5rem' }}>
